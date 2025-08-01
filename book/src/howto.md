@@ -32,7 +32,26 @@ You'll need a [compatible GPU](https://docs.modular.com/max/faq#gpu-requirements
 
 2. Install a package manager to run the Mojo🔥 programs:
 
-    #### Option 1: [`uv`](https://docs.astral.sh/uv/getting-started/installation/) (recommended for users)
+    #### **(Recommended) Option 1**: [pixi](https://pixi.sh/latest/#installation)
+
+    `pixi` is the **recommended option** for this project because:
+    - ✅ Easy access to Modular's MAX/Mojo packages
+    - ✅ Handles CUDA toolkit and GPU dependencies
+    - ✅ Full conda + PyPI ecosystem support
+
+    **Note: A few puzzles only work with `pixi`.**
+
+    **Install:**
+    ```bash
+    curl -fsSL https://pixi.sh/install.sh | sh
+    ```
+
+    **Update:**
+    ```bash
+    pixi self-update
+    ```
+
+    #### Option 2: [`uv`](https://docs.astral.sh/uv/getting-started/installation/)
 
     **Install:**
     ```bash
@@ -49,31 +68,12 @@ You'll need a [compatible GPU](https://docs.modular.com/max/faq#gpu-requirements
     uv venv && source .venv/bin/activate
     ```
 
-    #### Option 2: [pixi](https://pixi.sh/latest/#installation) (recommended for contributors)
-
-    **Install:**
-    ```bash
-    curl -fsSL https://pixi.sh/install.sh | sh
-    ```
-
-    **Update:**
-    ```bash
-    pixi self-update
-    ```
-
-3. Run the puzzles via `uv` or `pixi` as follows:
+3. Run the puzzles via `pixi` or `uv` as follows:
 
     <div class="code-tabs" data-tab-group="package-manager">
       <div class="tab-buttons">
-        <button class="tab-button">uv</button>
         <button class="tab-button">pixi</button>
-      </div>
-      <div class="tab-content">
-
-    ```bash
-    uv run poe pXX  # Replace XX with the puzzle number
-    ```
-
+        <button class="tab-button">uv</button>
       </div>
       <div class="tab-content">
 
@@ -82,11 +82,18 @@ You'll need a [compatible GPU](https://docs.modular.com/max/faq#gpu-requirements
     ```
 
       </div>
+      <div class="tab-content">
+
+    ```bash
+    uv run poe pXX  # Replace XX with the puzzle number
+    ```
+
+      </div>
     </div>
 
 For example, to run puzzle 01:
-- `uv run poe p01` or
-- `pixi run p01`
+- `pixi run p01` or
+- `uv run poe p01`
 
 ### Knowledge prerequisites
 
@@ -100,6 +107,10 @@ Basic knowledge of:
 No prior GPU programming experience is necessary! We'll build that knowledge through the puzzles.
 
 Let's begin our journey into the exciting world of GPU computing with Mojo 🔥!
+
+### Development
+
+Please see details in the [README](https://github.com/modular/mojo-gpu-puzzles#development).
 
 ## Join the community
 

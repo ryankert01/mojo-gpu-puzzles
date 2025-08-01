@@ -1,165 +1,160 @@
-# Part VI: GPU Warp Programming - Advanced Communication Primitives
+# Puzzle 24: Warp Fundamentals
 
 ## Overview
 
-Welcome to **Puzzle 24: Advanced Warp Communication Primitives**! This puzzle introduces you to sophisticated GPU **warp-level butterfly communication and parallel scan operations** - hardware-accelerated primitives that enable efficient tree-based algorithms and parallel reductions within warps. You'll learn about using [shuffle_xor](https://docs.modular.com/mojo/stdlib/gpu/warp/shuffle_xor) for butterfly networks and [prefix_sum](https://docs.modular.com/mojo/stdlib/gpu/warp/prefix_sum) for hardware-optimized parallel scan without complex multi-phase shared memory algorithms.
+Welcome to **Part VI: GPU Warp Programming**! This section introduces you to GPU **warp-level primitives** - hardware-accelerated operations that leverage synchronized thread execution within warps. You'll master the art of using built-in warp operations to replace complex shared memory patterns with simple, efficient function calls.
 
-**What you'll achieve:** Transform from complex shared memory + barrier + multi-phase reduction patterns to elegant single-function-call algorithms that leverage hardware-optimized butterfly networks and parallel scan units.
+**What you'll achieve:** Transform from complex shared memory + barrier + tree reduction patterns to elegant warp primitive calls that leverage hardware synchronization.
 
-**Key insight:** _GPU warps can perform sophisticated tree-based communication and parallel scan operations in hardware - Mojo's advanced warp primitives harness butterfly networks and dedicated scan units to provide \\(O(\\log n)\\) algorithms with single-instruction simplicity._
+**Key insight:** _GPU warps execute in lockstep - Mojo's warp operations harness this synchronization to provide powerful parallel primitives with zero explicit synchronization._
 
 ## What you'll learn
 
-### **Advanced warp communication model**
-Understand sophisticated communication patterns within GPU warps:
+### **GPU warp execution model**
+Understand the fundamental hardware unit of GPU parallelism:
 
 ```
-GPU Warp Butterfly Network (32 threads, XOR-based communication)
-Offset 16: Lane 0 ↔ Lane 16, Lane 1 ↔ Lane 17, ..., Lane 15 ↔ Lane 31
-Offset 8:  Lane 0 ↔ Lane 8,  Lane 1 ↔ Lane 9,  ..., Lane 23 ↔ Lane 31
-Offset 4:  Lane 0 ↔ Lane 4,  Lane 1 ↔ Lane 5,  ..., Lane 27 ↔ Lane 31
-Offset 2:  Lane 0 ↔ Lane 2,  Lane 1 ↔ Lane 3,  ..., Lane 29 ↔ Lane 31
-Offset 1:  Lane 0 ↔ Lane 1,  Lane 2 ↔ Lane 3,  ..., Lane 30 ↔ Lane 31
-
-Hardware Prefix Sum (parallel scan acceleration)
-Input:  [1, 2, 3, 4, 5, 6, 7, 8, ...]
-Output: [1, 3, 6, 10, 15, 21, 28, 36, ...] (inclusive scan)
+GPU Block (e.g., 256 threads)
+├── Warp 0 (32 threads, SIMT lockstep execution)
+│   ├── Lane 0  ─┐
+│   ├── Lane 1   │ All execute same instruction
+│   ├── Lane 2   │ at same time (SIMT)
+│   │   ...      │
+│   └── Lane 31 ─┘
+├── Warp 1 (32 threads, independent)
+├── Warp 2 (32 threads, independent)
+└── ...
 ```
 
 **Hardware reality:**
-- **Butterfly networks**: XOR-based communication creates optimal tree topologies
-- **Dedicated scan units**: Hardware-accelerated parallel prefix operations
-- **Logarithmic complexity**: \\(O(\\log n)\\) algorithms replace \\(O(n)\\) sequential patterns
-- **Single-cycle operations**: Complex reductions happen in specialized hardware
+- **32 threads per warp** on NVIDIA GPUs (`WARP_SIZE=32`)
+- **32 or 64 threads per warp** on AMD GPUs (`WARP_SIZE=32 or 64`)
+- **Lockstep execution**: All threads in a warp execute the same instruction simultaneously
+- **Zero synchronization cost**: Warp operations happen instantly within each warp
 
-### **Advanced warp operations in Mojo**
-Master the sophisticated communication primitives from `gpu.warp`:
+### **Warp operations available in Mojo**
+Master the core warp primitives from `gpu.warp`:
 
-1. **[`shuffle_xor(value, mask)`](https://docs.modular.com/mojo/stdlib/gpu/warp/shuffle_xor)**: XOR-based butterfly communication for tree algorithms
-2. **[`prefix_sum(value)`](https://docs.modular.com/mojo/stdlib/gpu/warp/prefix_sum)**: Hardware-accelerated parallel scan operations
-3. **Advanced coordination patterns**: Combining multiple primitives for complex algorithms
-
-> **Note:** These primitives enable sophisticated parallel algorithms like parallel reductions, stream compaction, quicksort partitioning, and FFT operations that would otherwise require dozens of lines of shared memory coordination code.
+1. **`sum(value)`**: Sum all values across warp lanes
+2. **`shuffle_idx(value, lane)`**: Get value from specific lane
+3. **`shuffle_down(value, delta)`**: Get value from lane+delta
+4. **`prefix_sum(value)`**: Compute prefix sum across lanes
+5. **`lane_id()`**: Get current thread's lane number (0-31 or 0-63)
 
 ### **Performance transformation example**
 ```mojo
-# Complex parallel reduction (traditional approach - from Puzzle 12):
+# Complex pattern we have seen earlier (from p12.mojo):
 shared = tb[dtype]().row_major[WARP_SIZE]().shared().alloc()
-shared[local_i] = input[global_i]
+shared[local_i] = partial_product
 barrier()
-offset = 1
-for i in range(Int(log2(Scalar[dtype](WARP_SIZE)))):
-    var current_val: output.element_type = 0
-    if local_i >= offset and local_i < WARP_SIZE:
-        current_val = shared[local_i - offset]
-    barrier()
-    if local_i >= offset and local_i < WARP_SIZE:
-        shared[local_i] += current_val
-    barrier()
-    offset *= 2
 
-# Advanced warp primitives eliminate all this complexity:
-current_val = input[global_i]
-scan_result = prefix_sum[exclusive=False](current_val)  # Single call!
-output[global_i] = scan_result
+# Safe tree reduction would require read-write separation:
+stride = SIZE // 2
+while stride > 0:
+    var temp_val: Scalar[dtype] = 0
+    if local_i < stride:
+        temp_val = shared[local_i + stride]  # Read phase
+    barrier()
+    if local_i < stride:
+        shared[local_i] += temp_val  # Write phase
+    barrier()
+    stride //= 2
+
+# But warp operations eliminate all this complexity:
+total = sum(partial_product)  # No barriers, no race conditions!
 ```
 
-### **When advanced warp operations excel**
+### **When warp operations excel**
 Learn the performance characteristics:
-
-| Algorithm Pattern | Traditional | Advanced Warp Operations |
-|------------------|-------------|-------------------------|
-| Parallel reductions | Shared memory + barriers | Single `shuffle_xor` tree |
-| Prefix/scan operations | Multi-phase algorithms | Hardware `prefix_sum` |
-| Stream compaction | Complex indexing | `prefix_sum` + coordination |
-| Quicksort partition | Manual position calculation | Combined primitives |
-| Tree algorithms | Recursive shared memory | Butterfly communication |
+```
+Problem Scale         Traditional    Warp Operations
+Single warp (32)      Fast          Fastest (no barriers)
+Few warps (128)       Good          Excellent (minimal overhead)
+Many warps (1024+)    Good          Outstanding (scales linearly)
+Massive (16K+)        Bottlenecked  Memory-bandwidth limited
+```
 
 ## Prerequisites
 
-Before diving into advanced warp communication, ensure you're comfortable with:
-- **Part VI warp fundamentals**: Understanding SIMT execution and basic warp operations (see [Puzzle 22](../puzzle_22/puzzle_22.md) and [Puzzle 23](../puzzle_23/puzzle_23.md))
-- **Parallel algorithm theory**: Tree reductions, parallel scan, and butterfly networks
-- **GPU memory hierarchy**: Shared memory patterns and synchronization (see [Puzzle 12](../puzzle_12/puzzle_12.md))
-- **Mathematical operations**: Understanding XOR operations and logarithmic complexity
+Before diving into warp programming, ensure you're comfortable with:
+- **Part V functional patterns**: Elementwise, tiled, and vectorized approaches
+- **GPU thread hierarchy**: Understanding blocks, warps, and threads
+- **LayoutTensor operations**: Loading, storing, and tensor manipulation
+- **Shared memory concepts**: Why barriers and tree reduction are complex
 
 ## Learning path
 
-### **1. Butterfly communication with shuffle_xor**
-**→ [Warp Shuffle XOR](./warp_shuffle_xor.md)**
+### **1. SIMT execution model**
+**→ [Warp Lanes & SIMT Execution](./warp_simt.md)**
 
-Master XOR-based butterfly communication patterns for efficient tree algorithms and parallel reductions.
+Understand the hardware foundation that makes warp operations possible.
 
 **What you'll master:**
-- Using `shuffle_xor()` for creating butterfly network topologies
-- Implementing \\(O(\\log n)\\) parallel reductions with tree communication
-- Understanding XOR-based lane pairing and communication patterns
-- Advanced conditional butterfly operations for multi-value reductions
+- Single Instruction, Multiple Thread (SIMT) execution model
+- Warp divergence and convergence patterns
+- Lane synchronization within warps
+- Hardware vs software thread management
+
+**Key insight:** Warps are the fundamental unit of GPU execution - understanding SIMT unlocks warp programming.
+
+### **2. Warp sum fundamentals**
+**→ [warp.sum() Essentials](./warp_sum.md)**
+
+Master the most important warp operation through dot product implementation.
+
+**What you'll master:**
+- Replacing shared memory + barriers with `sum()`
+- Cross-GPU architecture compatibility (`WARP_SIZE`)
+- Kernel vs functional programming patterns with warps
+- Performance comparison with traditional approaches
 
 **Key pattern:**
 ```mojo
-max_val = input[global_i]
-offset = WARP_SIZE // 2
-while offset > 0:
-    max_val = max(max_val, shuffle_xor(max_val, offset))
-    offset //= 2
-# All lanes now have global maximum
+partial_result = compute_per_lane_value()
+total = sum(partial_result)  # Magic happens here!
+if lane_id() == 0:
+    output[0] = total
 ```
 
-### **2. Hardware-accelerated parallel scan with prefix_sum**
-**→ [Warp Prefix Sum](./warp_prefix_sum.md)**
+### **3. When to use warp programming**
+**→ [When to Use Warp Programming](./warp_extra.md)**
 
-Master hardware-optimized parallel scan operations that replace complex multi-phase algorithms with single function calls.
+Learn the decision framework for choosing warp operations over alternatives.
 
 **What you'll master:**
-- Using `prefix_sum()` for hardware-accelerated cumulative operations
-- Implementing stream compaction and parallel partitioning
-- Combining `prefix_sum` with `shuffle_xor` for advanced coordination
-- Understanding inclusive vs exclusive scan patterns
+- Problem characteristics that favor warp operations
+- Performance scaling patterns with warp count
+- Memory bandwidth vs computation trade-offs
+- Warp operation selection guidelines
 
-**Key pattern:**
-```mojo
-current_val = input[global_i]
-scan_result = prefix_sum[exclusive=False](current_val)
-output[global_i] = scan_result  # Hardware-optimized cumulative sum
-```
+**Decision framework:** When reduction operations become the bottleneck, warp primitives often provide the breakthrough.
 
-## Key concepts
+## Key concepts to master
 
-### **Butterfly network communication**
-Understanding XOR-based communication topologies:
-- **XOR pairing**: `lane_id ⊕ mask` creates symmetric communication pairs
-- **Tree reduction**: Logarithmic complexity through hierarchical data exchange
-- **Parallel coordination**: All lanes participate simultaneously in reduction
-- **Dynamic algorithms**: Works for any power-of-2 `WARP_SIZE` (32, 64, etc.)
+### **Hardware-software alignment**
+Understanding how Mojo's warp operations map to GPU hardware:
+- **SIMT execution**: All lanes execute same instruction simultaneously
+- **Built-in synchronization**: No explicit barriers needed within warps
+- **Cross-architecture support**: `WARP_SIZE` handles NVIDIA vs AMD differences
 
-### **Hardware-accelerated parallel scan**
-Recognizing dedicated scan unit capabilities:
-- **Prefix sum operations**: Cumulative operations with hardware acceleration
-- **Stream compaction**: Parallel filtering and data reorganization
-- **Single-function simplicity**: Complex algorithms become single calls
-- **Zero synchronization**: Hardware handles all coordination internally
+### **Pattern transformation**
+Converting complex parallel patterns to warp primitives:
+- **Tree reduction** → `sum()`
+- **Prefix computation** → `prefix_sum()`
+- **Data shuffling** → `shuffle_idx()`, `shuffle_down()`
 
-### **Algorithm complexity transformation**
-Converting traditional patterns to advanced warp operations:
-- **Sequential reductions** (\\(O(n)\\)) → **Butterfly reductions** (\\(O(\\log n)\\))
-- **Multi-phase scan algorithms** → **Single hardware prefix_sum**
-- **Complex shared memory patterns** → **Register-only operations**
-- **Explicit synchronization** → **Hardware-managed coordination**
-
-### **Advanced coordination patterns**
-Combining multiple primitives for sophisticated algorithms:
-- **Dual reductions**: Simultaneous min/max tracking with butterfly patterns
-- **Parallel partitioning**: `shuffle_xor` + `prefix_sum` for quicksort-style operations
-- **Conditional operations**: Lane-based output selection with global coordination
-- **Multi-primitive algorithms**: Complex parallel patterns with optimal performance
+### **Performance characteristics**
+Recognizing when warp operations provide advantages:
+- **Small to medium problems**: Eliminates barrier overhead
+- **Large problems**: Reduces memory traffic and improves cache utilization
+- **Regular patterns**: Warp operations excel with predictable access patterns
 
 ## Getting started
 
-Ready to harness advanced GPU warp-level communication? Start with butterfly network operations to understand tree-based communication, then progress to hardware-accelerated parallel scan for optimal algorithm performance.
+Ready to harness GPU warp-level parallelism? Start with understanding the SIMT execution model, then dive into practical warp sum implementation, and finish with the strategic decision framework.
 
-💡 **Success tip**: Think of advanced warp operations as **hardware-accelerated parallel algorithm building blocks**. These primitives replace entire categories of complex shared memory algorithms with single, optimized function calls.
+💡 **Success tip**: Think of warps as **synchronized vector units** rather than independent threads. This mental model will guide you toward effective warp programming patterns.
 
-**Learning objective**: By the end of Puzzle 24, you'll recognize when advanced warp primitives can replace complex multi-phase algorithms, enabling you to write dramatically simpler and faster tree-based reductions, parallel scans, and coordination patterns.
+**Learning objective**: By the end of Part VI, you'll recognize when warp operations can replace complex synchronization patterns, enabling you to write simpler, faster GPU code.
 
-**Ready to begin?** Start with **[Warp Shuffle XOR Operations](./warp_shuffle_xor.md)** to master butterfly communication, then advance to **[Warp Prefix Sum Operations](./warp_prefix_sum.md)** for hardware-accelerated parallel scan patterns!
+**Ready to begin?** Start with **[SIMT Execution Model](./warp_simt.md)** and discover the power of warp-level programming!

@@ -1,108 +1,174 @@
-# Puzzle 20: Kernel Fusion and Custom Backward Pass
+# Puzzle 20: 1D Convolution Op
 
-> ## Kernel fusion and autograd integration
+> ## From MAX Graph to PyTorch custom ops
 >
-> We're continuing Part IV with a focus on **kernel fusion** and **autograd integration**.
+> We're now entering Part V of our GPU puzzle journey: **PyTorch Custom Operations**.
 >
-> Building on [Puzzle 19](../puzzle_19/puzzle_19.md), you'll now explore how to combine multiple operations into a single efficient kernel and integrate it with PyTorch's autograd system. You'll learn:
-> - How kernel fusion improves performance in both forward and backward passes
-> - Why custom backward passes are crucial for fused operations
-> - How to design fused kernels with proper gradient flow
-> - The performance implications of different fusion strategies
+> In [Puzzle 17](../puzzle_17/puzzle_17.md), we learned how to integrate Mojo GPU kernels with Python using MAX Graph. Now we'll explore how to:
+> - Use the same Mojo kernel with PyTorch's CustomOpLibrary
+> - Integrate with PyTorch's tensor system and autograd
+> - Compare MAX Graph vs PyTorch approaches for custom operations
+> - Understand the critical pattern of explicit output tensor allocation
 >
-> This puzzle demonstrates that **how you combine operations** can be as important as **how you implement them**.
+> This transition shows how the same optimized GPU kernel can work with different Python integration approaches.
 
 ## Overview
 
-In this puzzle, you'll implement fused LayerNorm + Linear operations with both forward and backward passes. While both fused and unfused implementations produce identical results, they use different strategies that lead to significant performance differences.
+In this puzzle, we'll take the exact same 1D convolution kernel from [Puzzle 17](../puzzle_17/puzzle_17.md) and integrate it with PyTorch using the [CustomOpLibrary](https://docs.modular.com/max/api/python/torch/CustomOpLibrary/) instead of MAX Graph.
 
-You'll compare:
-- **Unfused approach**: Separate kernels for LayerNorm and Linear
-- **Fused kernel**: Combined operation in a single kernel
-- **Custom backward pass**: Gradient computation for fused operations
+The key learning here is that **the same Mojo kernel works unchanged** - only the Python integration layer differs between MAX Graph and PyTorch approaches.
 
-This comparison teaches the critical importance of kernel fusion and proper gradient computation in deep learning operations.
+## Code to complete
 
-## Background: LayerNorm + Linear operations
-
-LayerNorm and Linear are fundamental operations in transformer architectures, particularly in attention mechanisms and feed-forward networks. Here's how they're typically used:
+To complete this puzzle, you need to fill in one line to call the custom operation:
 
 ```python
-import torch
-import torch.nn.functional as F
+{{#include ../../../problems/p20/p20.py:conv1d_pytorch}}
+```
+<a href="{{#include ../_includes/repo_url.md}}/blob/main/problems/p20/p20.py" class="filename">View full file: problems/p20/p20.py</a>
 
-# Input: hidden states
-x = torch.randn(batch_size, seq_len, hidden_dim)
+You can run the puzzle with:
 
-# LayerNorm parameters
-ln_weight = torch.ones(hidden_dim)  # scale parameter (γ)
-ln_bias = torch.zeros(hidden_dim)   # shift parameter (β)
+<div class="code-tabs" data-tab-group="package-manager">
+  <div class="tab-buttons">
+    <button class="tab-button">uv</button>
+    <button class="tab-button">pixi</button>
+  </div>
+  <div class="tab-content">
 
-# Linear layer parameters
-linear_weight = torch.randn(output_dim, hidden_dim)
-linear_bias = torch.zeros(output_dim)
-
-# Unfused operations (with autograd)
-ln_output = F.layer_norm(x, [hidden_dim], weight=ln_weight, bias=ln_bias)
-output = F.linear(ln_output, linear_weight, linear_bias)
-
-# Fused operation (custom implementation)
-# This is what you'll implement in this puzzle
-output_fused = fused_layernorm_linear(x, ln_weight, ln_bias, linear_weight, linear_bias)
+```bash
+uv run poe p20
 ```
 
-When fused, these operations are combined into a single efficient kernel that:
-- Reduces memory bandwidth usage
-- Minimizes kernel launch overhead
-- Improves cache utilization
-- Eliminates intermediate allocations
+  </div>
+  <div class="tab-content">
 
-In practice, this fusion can provide up to 1.5-2x speedup in both forward and backward passes, which is crucial for transformer training efficiency.
+```bash
+pixi run p20
+```
 
-### Why custom backward passes matter
+  </div>
+</div>
 
-PyTorch's autograd system automatically computes gradients for individual operations, but fused operations require custom backward passes to:
-- Maintain numerical stability
-- Ensure proper gradient flow
-- Optimize memory access patterns
-- Handle atomic operations for gradient accumulation
+When successful, you should see output similar to:
 
-## Learning path
+```
+Puzzle 20: From MAX Graph to PyTorch Custom Ops
+============================================================
+Input array: [ 0.  1.  2.  3.  4.  5.  6.  7.  8.  9. 10. 11. 12. 13. 14.]
+Convolution kernel: [0. 1. 2. 3.]
 
-This puzzle is structured in two parts to build your understanding systematically:
+NumPy reference result: [14. 20. 26. 32. 38. 44. 50. 56. 62. 68. 74. 80. 41. 14.  0.]
 
-### **[Forward pass implementation](./forward_pass.md)**
+Testing PyTorch Custom Op (device: cuda)
+----------------------------------------
+PyTorch custom op result: [14. 20. 26. 32. 38. 44. 50. 56. 62. 68. 74. 80. 41. 14.  0.]
+✅ PyTorch custom op verification PASSED
 
-Start here to implement the fused forward kernel and understand kernel fusion benefits.
+Comparing with MAX Graph approach (like p15)
+--------------------------------------------
+MAX Graph result: [14. 20. 26. 32. 38. 44. 50. 56. 62. 68. 74. 80. 41. 14.  0.]
+✅ MAX Graph verification PASSED
+✅ PyTorch and MAX Graph results MATCH
+```
 
-**What you'll do:**
-- Implement both unfused and fused forward kernels
-- Learn fundamental kernel fusion techniques
-- See the same operations implemented with different strategies
-- Understand performance implications of fusion
-- Master memory access patterns for optimal performance
+## Solution
 
-### **[Backward pass implementation](./backward_pass.md)**
+<details class="solution-details">
+<summary></summary>
 
-Deep dive into autograd integration and gradient computation.
+The solution requires calling the compiled custom operation with the proper arguments:
 
-**What you'll learn:**
-- How to implement custom backward passes
-- Why proper gradient flow is crucial
-- Real-world implications for training efficiency
-- Optimization strategies for backward operations
-- Mathematical foundations of gradient computation
-- Atomic operations for gradient accumulation
-- Numerical stability in backward passes
+```python
+{{#include ../../../solutions/p20/p20.py:conv1d_pytorch_call}}
+```
 
-## Getting started
+<div class="solution-explanation">
 
-Ready to explore kernel fusion and autograd integration? Start with the **[Forward pass implementation](./forward_pass.md)** to implement the fused kernel, then move to **[Backward pass implementation](./backward_pass.md)** to understand gradient computation.
+This solution demonstrates several critical concepts:
 
-The puzzle includes a comprehensive testing framework that verifies:
-- Numerical correctness against PyTorch's implementation for both forward and backward passes
-- Performance comparison between our CPU and GPU implementations
-- Gradient computation accuracy for all parameters (input, LayerNorm weights/bias, Linear weights/bias)
-- Memory usage optimization through kernel fusion
+### 1. **torch.compile() integration**
 
-💡 **Success tip:** Pay attention to how the different implementations (fused vs unfused) affect both forward and backward pass performance - this insight applies to many deep learning operations beyond LayerNorm + Linear. The backward pass implementation is particularly important as it directly impacts training efficiency and numerical stability.
+The solution shows `torch.compile` integration
+
+```python
+torch.compile(conv1d)(output_tensor, input_tensor, kernel_tensor)
+```
+
+### 2. **Explicit Output Tensor Allocation**
+```python
+output_tensor = torch.empty_like(input_tensor)
+```
+- Unlike MAX Graph which handles output allocation automatically
+- PyTorch CustomOpLibrary requires **pre-allocated output tensors**
+- The Mojo operation signature expects `(out, input, kernel)` order
+
+### 3. **Parameter Dictionary**
+```python
+ops.conv1d[{"input_size": input_tensor.shape[0], "conv_size": kernel_tensor.shape[0]}]
+```
+- Parameters are passed as a dictionary to the operation
+- These become compile-time parameters in the Mojo kernel
+- Must match the parameter names in the Mojo `@staticmethod fn execute` signature
+
+### 4. **Same Kernel, Different Integration**
+The underlying Mojo kernel (`conv1d_kernel`) is identical to Puzzle 17:
+- Same GPU kernel code
+- Same memory access patterns
+- Same computational logic
+- Only the Python wrapper layer changes
+
+</div>
+
+</details>
+
+## Key concepts
+
+This puzzle illustrates several important patterns for PyTorch custom operations:
+
+| Concept | MAX Graph (p15) | PyTorch CustomOpLibrary (p18) |
+|---------|-----------------|-------------------------------|
+| **Output Allocation** | Automatic | Manual (`torch.empty_like()`) |
+| **Operation Call** | `ops.custom(...)` | `torch.compile(op)(...)` |
+| **Parameter Passing** | `parameters={...}` | `op[{...}]` |
+| **Device Management** | Explicit device context | PyTorch tensor device |
+| **Memory Management** | MAX Graph tensors | PyTorch tensors |
+
+### Critical pattern: Explicit output tensor allocation
+
+The most important difference is that PyTorch CustomOpLibrary requires **explicit output tensor allocation**:
+
+```python
+# ❌ This won't work - no output tensor
+result = torch.compile(conv1d)(input_tensor, kernel_tensor)
+
+# ✅ This works - pre-allocated output tensor
+output_tensor = torch.empty_like(input_tensor)
+torch.compile(conv1d)(output_tensor, input_tensor, kernel_tensor)
+```
+
+This pattern ensures:
+- Memory is allocated on the correct device
+- Output tensor has the right shape and dtype
+- The Mojo kernel can write directly to the output buffer
+
+### torch.compile() integration
+
+`torch.compile()` is essential because it:
+- Handles memory layout conversion between PyTorch and Mojo
+- Manages device synchronization (CPU ↔ GPU)
+- Optimizes tensor format conversion
+- Provides proper error handling for memory operations
+
+_Note: Without `torch.compile()`, you might encounter `std::bad_alloc` errors because the raw operation can't handle PyTorch's tensor memory management._
+
+## Debugging custom operations
+
+Common issues and solutions:
+
+1. **Memory Allocation Errors**: Always use `torch.compile()`
+2. **Wrong Output Shape**: Ensure output tensor matches expected dimensions
+3. **Device Mismatch**: All tensors must be on the same device
+4. **Parameter Errors**: Verify parameter names match Mojo operation signature
+
+The debug approach: Compare your PyTorch results with the MAX Graph reference implementation that runs the same kernel.

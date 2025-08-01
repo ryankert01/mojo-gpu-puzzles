@@ -17,7 +17,7 @@ Implement a kernel that adds 10 to each position of matrix `a` and stores it in 
 
 > 🔑 **2D thread indexing convention**
 >
-> We extend the block-based indexing from [puzzle 04](../puzzle_04/puzzle_04.md) to 2D:
+> We extend the block-based indexing from [puzzle 4](../puzzle_04/puzzle_04.md) to 2D:
 >
 > ```txt
 > Global position calculation:

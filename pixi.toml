@@ -24,15 +24,17 @@ pytorch-triton-rocm = {version = "*", index = "https://download.pytorch.org/whl/
 
 [dependencies]
 python = ">=3.10,<3.13"
-max = "==25.5.0.dev2025062619"
+max = "*"  # includes `mojo-compiler`
+mojo = "*" # includes lsp, debugger, formatter etc.
 bash = ">=5.2.21,<6"
 manim = ">=0.18.1,<0.19"
 mdbook = ">=0.4.48,<0.5"
 pre-commit = ">=4.2.0,<5"
 
+
 [environments]
-cuda = { features = ["cuda"] }
-rocm = { features = ["rocm"] }
+cuda = { features = ["cuda"], solve-group = "cuda" }
+rocm = { features = ["rocm"], solve-group = "rocm" }
 default = { features = ["cuda"] }
 
 [tasks]
@@ -44,6 +46,7 @@ memcheck = { cmd = "bash solutions/sanitizer.sh memcheck" }
 racecheck = { cmd = "bash solutions/sanitizer.sh racecheck" }
 synccheck = { cmd = "bash solutions/sanitizer.sh synccheck" }
 initcheck = { cmd = "bash solutions/sanitizer.sh initcheck" }
+sanitizers = { cmd = "bash solutions/sanitizer.sh all" }
 
 build-book = "cd book && mdbook build"
 book = { cmd = "cd book && mdbook serve --open", depends-on = ["build-book"] }
@@ -79,18 +82,12 @@ p08 = "mojo problems/p08/p08.mojo"
 p08_layout_tensor = "mojo problems/p08/p08_layout_tensor.mojo"
 viz08 = "cd book/src/puzzle_08 && python puzzle_08_viz.py"
 
-p09 = "mojo problems/p09/p09.mojo"
-p09_layout_tensor = "mojo problems/p09/p09_layout_tensor.mojo"
-viz09 = "cd book/src/puzzle_09 && python puzzle_09_viz.py"
-
-p10 = "mojo problems/p10/p10.mojo"
-p10_layout_tensor = "mojo problems/p10/p10_layout_tensor.mojo"
-viz10 = "cd book/src/puzzle_10 && python puzzle_10_viz.py"
-
 p11 = "mojo problems/p11/p11.mojo"
+p11_layout_tensor = "mojo problems/p11/p11_layout_tensor.mojo"
 viz11 = "cd book/src/puzzle_11 && python puzzle_11_viz.py"
 
 p12 = "mojo problems/p12/p12.mojo"
+p12_layout_tensor = "mojo problems/p12/p12_layout_tensor.mojo"
 viz12 = "cd book/src/puzzle_12 && python puzzle_12_viz.py"
 
 p13 = "mojo problems/p13/p13.mojo"
@@ -98,28 +95,38 @@ viz13 = "cd book/src/puzzle_13 && python puzzle_13_viz.py"
 
 p14 = "mojo problems/p14/p14.mojo"
 viz14 = "cd book/src/puzzle_14 && python puzzle_14_viz.py"
-rooflineviz = "cd book/src/puzzle_14 && python roofline_viz.py"
 
-p15 = "mojo package problems/p15/op -o problems/p15/op.mojopkg && python problems/p15/p15.py"
+p15 = "mojo problems/p15/p15.mojo"
+viz15 = "cd book/src/puzzle_15 && python puzzle_15_viz.py"
 
-p16-package = "mojo package problems/p16/op -o problems/p16/op.mojopkg"
-p16-test-kernels = { cmd = "mojo test problems/p16", depends-on = ["p16-package"] }
-p16 = { cmd = "python problems/p16/p16.py", depends-on = ["p16-package"] }
+p16 = "mojo problems/p16/p16.mojo"
+viz16 = "cd book/src/puzzle_16 && python puzzle_16_viz.py"
+rooflineviz = "cd book/src/puzzle_16 && python roofline_viz.py"
 
 p17 = "mojo package problems/p17/op -o problems/p17/op.mojopkg && python problems/p17/p17.py"
 
-p18 = "python problems/p18/p18.py"
+p18-package = "mojo package problems/p18/op -o problems/p18/op.mojopkg"
+p18-test-kernels = { cmd = "mojo test problems/p18", depends-on = ["p18-package"] }
+p18 = { cmd = "python problems/p18/p18.py", depends-on = ["p18-package"] }
 
-p19 = "python problems/p19/p19.py"
+p19 = "mojo package problems/p19/op -o problems/p19/op.mojopkg && python problems/p19/p19.py"
 
 p20 = "python problems/p20/p20.py"
 
-p21 = "mojo problems/p21/p21.mojo"
+p21 = "python problems/p21/p21.py"
 
-p22 = "mojo problems/p22/p22.mojo"
+p22 = "python problems/p22/p22.py"
 
 p23 = "mojo problems/p23/p23.mojo"
 
 p24 = "mojo problems/p24/p24.mojo"
 
-all-animations = { cmd = "echo 'All animations generated!'", depends-on = ["viz01", "viz02", "viz03", "viz04", "viz05", "viz06", "viz07", "viz08", "viz09", "viz10", "viz11", "viz12", "viz13", "viz14", "rooflineviz"] }
+p25 = "mojo problems/p25/p25.mojo"
+
+p26 = "mojo problems/p26/p26.mojo"
+
+p28 = "mojo problems/p28/p28.mojo"
+p29 = "mojo problems/p29/p29.mojo"
+
+generate-animations = { cmd = "echo 'All animations generated!'", depends-on = ["viz01", "viz02", "viz03", "viz04", "viz05", "viz06", "viz07", "viz08", "viz11", "viz12", "viz13", "viz14", "viz15", "viz16", "rooflineviz", "thread_indexing"] }
+clean-animations = "find book/src -type d -name media | xargs rm -rf"

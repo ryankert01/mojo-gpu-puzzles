@@ -3,287 +3,220 @@ from gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 from layout.tensor_builder import LayoutTensorBuild as tb
 from sys import sizeof, argv
+from math import log2
 from testing import assert_equal
 
-alias TPB = 3
-alias SIZE = 2
+alias TPB = 8
+alias SIZE = 8
 alias BLOCKS_PER_GRID = (1, 1)
-alias THREADS_PER_BLOCK = (TPB, TPB)
+alias THREADS_PER_BLOCK = (TPB, 1)
 alias dtype = DType.float32
-alias layout = Layout.row_major(SIZE, SIZE)
+alias layout = Layout.row_major(SIZE)
 
 
-# ANCHOR: naive_matmul_solution
-fn naive_matmul[
-    layout: Layout, size: Int
+# ANCHOR: prefix_sum_simple_solution
+fn prefix_sum_simple[
+    layout: Layout
 ](
     output: LayoutTensor[mut=False, dtype, layout],
     a: LayoutTensor[mut=False, dtype, layout],
-    b: LayoutTensor[mut=False, dtype, layout],
+    size: Int,
 ):
-    row = block_dim.y * block_idx.y + thread_idx.y
-    col = block_dim.x * block_idx.x + thread_idx.x
-
-    if row < size and col < size:
-        var acc: output.element_type = 0
-
-        @parameter
-        for k in range(size):
-            acc += a[row, k] * b[k, col]
-
-        output[row, col] = acc
-
-
-# ANCHOR_END: naive_matmul_solution
-
-
-# ANCHOR: single_block_matmul_solution
-fn single_block_matmul[
-    layout: Layout, size: Int
-](
-    output: LayoutTensor[mut=False, dtype, layout],
-    a: LayoutTensor[mut=False, dtype, layout],
-    b: LayoutTensor[mut=False, dtype, layout],
-):
-    row = block_dim.y * block_idx.y + thread_idx.y
-    col = block_dim.x * block_idx.x + thread_idx.x
-    local_row = thread_idx.y
-    local_col = thread_idx.x
-
-    a_shared = tb[dtype]().row_major[TPB, TPB]().shared().alloc()
-    b_shared = tb[dtype]().row_major[TPB, TPB]().shared().alloc()
-
-    if row < size and col < size:
-        a_shared[local_row, local_col] = a[row, col]
-        b_shared[local_row, local_col] = b[row, col]
+    global_i = block_dim.x * block_idx.x + thread_idx.x
+    local_i = thread_idx.x
+    shared = tb[dtype]().row_major[TPB]().shared().alloc()
+    if global_i < size:
+        shared[local_i] = a[global_i]
 
     barrier()
 
-    if row < size and col < size:
-        var acc: output.element_type = 0
+    offset = 1
+    for i in range(Int(log2(Scalar[dtype](TPB)))):
+        var current_val: output.element_type = 0
+        if local_i >= offset and local_i < size:
+            current_val = shared[local_i - offset]  # read
 
-        @parameter
-        for k in range(size):
-            acc += a_shared[local_row, k] * b_shared[k, local_col]
+        barrier()
+        if local_i >= offset and local_i < size:
+            shared[local_i] += current_val
 
-        output[row, col] = acc
+        barrier()
+        offset *= 2
 
-
-# ANCHOR_END: single_block_matmul_solution
-
-
-alias SIZE_TILED = 9
-alias BLOCKS_PER_GRID_TILED = (3, 3)  # each block covers 3x3 elements
-alias THREADS_PER_BLOCK_TILED = (TPB, TPB)
-alias layout_tiled = Layout.row_major(SIZE_TILED, SIZE_TILED)
+    if global_i < size:
+        output[global_i] = shared[local_i]
 
 
-# ANCHOR: matmul_tiled_solution
-fn matmul_tiled[
-    layout: Layout, size: Int
+# ANCHOR_END: prefix_sum_simple_solution
+
+
+alias SIZE_2 = 15
+alias BLOCKS_PER_GRID_2 = (2, 1)
+alias THREADS_PER_BLOCK_2 = (TPB, 1)
+alias EXTENDED_SIZE = SIZE_2 + 2  # up to 2 blocks
+alias extended_layout = Layout.row_major(EXTENDED_SIZE)
+
+# ANCHOR: prefix_sum_complete_solution
+
+
+# Kernel 1: Compute local prefix sums and store block sums in out
+fn prefix_sum_local_phase[
+    out_layout: Layout, in_layout: Layout
 ](
-    output: LayoutTensor[mut=False, dtype, layout],
-    a: LayoutTensor[mut=False, dtype, layout],
-    b: LayoutTensor[mut=False, dtype, layout],
+    output: LayoutTensor[mut=False, dtype, out_layout],
+    a: LayoutTensor[mut=False, dtype, in_layout],
+    size: Int,
 ):
-    local_row = thread_idx.y
-    local_col = thread_idx.x
-    tiled_row = block_idx.y * TPB + local_row
-    tiled_col = block_idx.x * TPB + local_col
+    global_i = block_dim.x * block_idx.x + thread_idx.x
+    local_i = thread_idx.x
+    shared = tb[dtype]().row_major[TPB]().shared().alloc()
 
-    a_shared = tb[dtype]().row_major[TPB, TPB]().shared().alloc()
-    b_shared = tb[dtype]().row_major[TPB, TPB]().shared().alloc()
+    # Load data into shared memory
+    # Example with SIZE_2=15, TPB=8, BLOCKS=2:
+    # Block 0 shared mem: [0,1,2,3,4,5,6,7]
+    # Block 1 shared mem: [8,9,10,11,12,13,14,uninitialized]
+    # Note: The last position remains uninitialized since global_i >= size,
+    # but this is safe because that thread doesn't participate in computation
+    if global_i < size:
+        shared[local_i] = a[global_i]
 
-    var acc: output.element_type = 0
+    barrier()
 
-    # Iterate over tiles to compute matrix product
-    @parameter
-    for tile in range((size + TPB - 1) // TPB):
-        # Load A tile - global row stays the same, col determined by tile
-        if tiled_row < size and (tile * TPB + local_col) < size:
-            a_shared[local_row, local_col] = a[
-                tiled_row, tile * TPB + local_col
-            ]
-
-        # Load B tile - row determined by tile, global col stays the same
-        if (tile * TPB + local_row) < size and tiled_col < size:
-            b_shared[local_row, local_col] = b[
-                tile * TPB + local_row, tiled_col
-            ]
-
-        barrier()
-
-        # Matrix multiplication within the tile
-        if tiled_row < size and tiled_col < size:
-
-            @parameter
-            for k in range(min(TPB, size - tile * TPB)):
-                acc += a_shared[local_row, k] * b_shared[k, local_col]
+    # Compute local prefix sum using parallel reduction
+    # This uses a tree-based algorithm with log(TPB) iterations
+    # Iteration 1 (offset=1):
+    #   Block 0: [0,0+1,2+1,3+2,4+3,5+4,6+5,7+6] = [0,1,3,5,7,9,11,13]
+    # Iteration 2 (offset=2):
+    #   Block 0: [0,1,3+0,5+1,7+3,9+5,11+7,13+9] = [0,1,3,6,10,14,18,22]
+    # Iteration 3 (offset=4):
+    #   Block 0: [0,1,3,6,10+0,14+1,18+3,22+6] = [0,1,3,6,10,15,21,28]
+    #   Block 1 follows same pattern to get [8,17,27,38,50,63,77,???]
+    offset = 1
+    for i in range(Int(log2(Scalar[dtype](TPB)))):
+        var current_val: output.element_type = 0
+        if local_i >= offset and local_i < TPB:
+            current_val = shared[local_i - offset]  # read
 
         barrier()
-
-    # Write out final result
-    if tiled_row < size and tiled_col < size:
-        output[tiled_row, tiled_col] = acc
-
-
-# ANCHOR_END: matmul_tiled_solution
-
-# ANCHOR: matmul_idiomatic_tiled_solution
-from gpu.memory import async_copy_wait_all
-from layout.layout_tensor import copy_dram_to_sram_async
-
-
-fn matmul_idiomatic_tiled[
-    layout: Layout, size: Int
-](
-    output: LayoutTensor[mut=False, dtype, layout],
-    a: LayoutTensor[mut=False, dtype, layout],
-    b: LayoutTensor[mut=False, dtype, layout],
-):
-    local_row = thread_idx.y
-    local_col = thread_idx.x
-    tiled_row = block_idx.y * TPB + local_row
-    tiled_col = block_idx.x * TPB + local_col
-
-    # Get the tile of the output matrix that this thread block is responsible for
-    out_tile = output.tile[TPB, TPB](block_idx.y, block_idx.x)
-    a_shared = tb[dtype]().row_major[TPB, TPB]().shared().alloc().fill(0)
-    b_shared = tb[dtype]().row_major[TPB, TPB]().shared().alloc().fill(0)
-
-    var acc: output.element_type = 0
-
-    alias load_a_layout = Layout.row_major(1, TPB)
-    alias load_b_layout = Layout.row_major(TPB, 1)
-
-    @parameter
-    for idx in range(size // TPB):  # Perfect division: 9 // 3 = 3 tiles
-        # Get tiles from A and B matrices
-        a_tile = a.tile[TPB, TPB](block_idx.y, idx)
-        b_tile = b.tile[TPB, TPB](idx, block_idx.x)
-
-        # Asynchronously copy tiles to shared memory
-        copy_dram_to_sram_async[thread_layout=load_a_layout](a_shared, a_tile)
-        copy_dram_to_sram_async[thread_layout=load_b_layout](b_shared, b_tile)
-
-        # Wait for all async copies to complete
-        async_copy_wait_all()
-        barrier()
-
-        # Compute partial matrix multiplication for this tile
-        @parameter
-        for k in range(TPB):
-            acc += a_shared[local_row, k] * b_shared[k, local_col]
+        if local_i >= offset and local_i < TPB:
+            shared[local_i] += current_val  # write
 
         barrier()
+        offset *= 2
 
-    # Write final result to output tile
-    if tiled_row < size and tiled_col < size:
-        out_tile[local_row, local_col] = acc
+    # Write local results to output
+    # Block 0 writes: [0,1,3,6,10,15,21,28]
+    # Block 1 writes: [8,17,27,38,50,63,77,???]
+    if global_i < size:
+        output[global_i] = shared[local_i]
+
+    # Store block sums in auxiliary space
+    # Block 0: Thread 7 stores shared[7] == 28 at position size+0 (position 15)
+    # Block 1: Thread 7 stores shared[7] == ??? at position size+1 (position 16).  This sum is not needed for the final output.
+    # This gives us: [0,1,3,6,10,15,21,28, 8,17,27,38,50,63,77, 28,???]
+    #                                                           ↑  ↑
+    #                                                     Block sums here
+    if local_i == TPB - 1:
+        output[size + block_idx.x] = shared[local_i]
 
 
-# ANCHOR_END: matmul_idiomatic_tiled_solution
+# Kernel 2: Add block sums to their respective blocks
+fn prefix_sum_block_sum_phase[
+    layout: Layout
+](output: LayoutTensor[mut=False, dtype, layout], size: Int):
+    global_i = block_dim.x * block_idx.x + thread_idx.x
+
+    # Second pass: add previous block's sum to each element
+    # Block 0: No change needed - already correct
+    # Block 1: Add Block 0's sum (28) to each element
+    #   Before: [8,17,27,38,50,63,77]
+    #   After: [36,45,55,66,78,91,105]
+    # Final result combines both blocks:
+    # [0,1,3,6,10,15,21,28, 36,45,55,66,78,91,105]
+    if block_idx.x > 0 and global_i < size:
+        prev_block_sum = output[size + block_idx.x - 1]
+        output[global_i] += prev_block_sum
+
+
+# ANCHOR_END: prefix_sum_complete_solution
 
 
 def main():
     with DeviceContext() as ctx:
-        size = (
-            SIZE_TILED if argv()[1] == "--idiomatic-tiled"
-            or argv()[1] == "--tiled" else SIZE
-        )
-        out = ctx.enqueue_create_buffer[dtype](size * size).enqueue_fill(0)
-        inp1 = ctx.enqueue_create_buffer[dtype](size * size).enqueue_fill(0)
-        inp2 = ctx.enqueue_create_buffer[dtype](size * size).enqueue_fill(0)
-        expected = ctx.enqueue_create_host_buffer[dtype](
-            size * size
-        ).enqueue_fill(0)
-        with inp1.map_to_host() as inp1_host, inp2.map_to_host() as inp2_host:
-            for row in range(size):
-                for col in range(size):
-                    val = row * size + col
-                    # row major: placing elements row by row
-                    inp1_host[row * size + col] = val
-                    inp2_host[row * size + col] = Float32(2.0) * val
+        use_simple = argv()[1] == "--simple"
+        size = SIZE if use_simple else SIZE_2
+        num_blocks = (size + TPB - 1) // TPB
 
-            # inp1 @ inp2
+        if not use_simple and num_blocks > EXTENDED_SIZE - SIZE_2:
+            raise Error("Extended buffer too small for the number of blocks")
+
+        buffer_size = size if use_simple else EXTENDED_SIZE
+        out = ctx.enqueue_create_buffer[dtype](buffer_size).enqueue_fill(0)
+        a = ctx.enqueue_create_buffer[dtype](size).enqueue_fill(0)
+
+        with a.map_to_host() as a_host:
             for i in range(size):
-                for j in range(size):
-                    for k in range(size):
-                        expected[i * size + j] += (
-                            inp1_host[i * size + k] * inp2_host[k * size + j]
-                        )
+                a_host[i] = i
 
-        out_tensor = LayoutTensor[mut=False, dtype, layout](out.unsafe_ptr())
-        a_tensor = LayoutTensor[mut=False, dtype, layout](inp1.unsafe_ptr())
-        b_tensor = LayoutTensor[mut=False, dtype, layout](inp2.unsafe_ptr())
+        a_tensor = LayoutTensor[mut=False, dtype, layout](a.unsafe_ptr())
 
-        if argv()[1] == "--naive":
-            ctx.enqueue_function[naive_matmul[layout, SIZE]](
-                out_tensor,
-                a_tensor,
-                b_tensor,
-                grid_dim=BLOCKS_PER_GRID,
-                block_dim=THREADS_PER_BLOCK,
-            )
-        elif argv()[1] == "--single-block":
-            ctx.enqueue_function[single_block_matmul[layout, SIZE]](
-                out_tensor,
-                a_tensor,
-                b_tensor,
-                grid_dim=BLOCKS_PER_GRID,
-                block_dim=THREADS_PER_BLOCK,
-            )
-        elif argv()[1] == "--tiled":
-            # Need to update the layout of the tensors to the tiled layout
-            out_tensor_tiled = LayoutTensor[mut=False, dtype, layout_tiled](
+        if use_simple:
+            out_tensor = LayoutTensor[mut=False, dtype, layout](
                 out.unsafe_ptr()
             )
-            a_tensor_tiled = LayoutTensor[mut=False, dtype, layout_tiled](
-                inp1.unsafe_ptr()
-            )
-            b_tensor_tiled = LayoutTensor[mut=False, dtype, layout_tiled](
-                inp2.unsafe_ptr()
-            )
 
-            ctx.enqueue_function[matmul_tiled[layout_tiled, SIZE_TILED]](
-                out_tensor_tiled,
-                a_tensor_tiled,
-                b_tensor_tiled,
-                grid_dim=BLOCKS_PER_GRID_TILED,
-                block_dim=THREADS_PER_BLOCK_TILED,
-            )
-        elif argv()[1] == "--idiomatic-tiled":
-            out_tensor_tiled = LayoutTensor[mut=False, dtype, layout_tiled](
-                out.unsafe_ptr()
-            )
-            a_tensor_tiled = LayoutTensor[mut=False, dtype, layout_tiled](
-                inp1.unsafe_ptr()
-            )
-            b_tensor_tiled = LayoutTensor[mut=False, dtype, layout_tiled](
-                inp2.unsafe_ptr()
-            )
-            ctx.enqueue_function[
-                matmul_idiomatic_tiled[layout_tiled, SIZE_TILED]
-            ](
-                out_tensor_tiled,
-                a_tensor_tiled,
-                b_tensor_tiled,
-                grid_dim=BLOCKS_PER_GRID_TILED,
-                block_dim=THREADS_PER_BLOCK_TILED,
+            ctx.enqueue_function[prefix_sum_simple[layout]](
+                out_tensor,
+                a_tensor,
+                size,
+                grid_dim=BLOCKS_PER_GRID,
+                block_dim=THREADS_PER_BLOCK,
             )
         else:
-            raise Error(
-                "Invalid option. Choose among the available flags: --naive,"
-                " --single-block, --tiled, --idiomatic-tiled"
+            var out_tensor = LayoutTensor[mut=False, dtype, extended_layout](
+                out.unsafe_ptr()
             )
 
+            # ANCHOR: prefix_sum_complete_block_level_sync
+            # Phase 1: Local prefix sums
+            ctx.enqueue_function[
+                prefix_sum_local_phase[extended_layout, extended_layout]
+            ](
+                out_tensor,
+                a_tensor,
+                size,
+                grid_dim=BLOCKS_PER_GRID_2,
+                block_dim=THREADS_PER_BLOCK_2,
+            )
+
+            # Phase 2: Add block sums
+            ctx.enqueue_function[prefix_sum_block_sum_phase[extended_layout]](
+                out_tensor,
+                size,
+                grid_dim=BLOCKS_PER_GRID_2,
+                block_dim=THREADS_PER_BLOCK_2,
+            )
+            # ANCHOR_END: prefix_sum_complete_block_level_sync
+
+        # Verify results for both cases
+        expected = ctx.enqueue_create_host_buffer[dtype](size).enqueue_fill(0)
         ctx.synchronize()
 
+        with a.map_to_host() as a_host:
+            expected[0] = a_host[0]
+            for i in range(1, size):
+                expected[i] = expected[i - 1] + a_host[i]
+
         with out.map_to_host() as out_host:
+            if not use_simple:
+                print(
+                    "Note: we print the extended buffer here, but we only need"
+                    " to print the first `size` elements"
+                )
+
             print("out:", out_host)
             print("expected:", expected)
-            for col in range(size):
-                for row in range(size):
-                    assert_equal(
-                        out_host[col * size + row], expected[col * size + row]
-                    )
+            # Here we need to use the size of the original array, not the extended one
+            size = size if use_simple else SIZE_2
+            for i in range(size):
+                assert_equal(out_host[i], expected[i])

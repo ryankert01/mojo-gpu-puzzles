@@ -51,6 +51,8 @@ The key insight is how LayoutTensor simplifies shared memory management while ma
 
 > **Note**: LayoutTensor handles memory layout, but you still need to manage thread synchronization with `barrier()` when using shared memory.
 
+**Educational Note**: In this specific puzzle, the `barrier()` isn't strictly necessary since each thread only accesses its own shared memory location. However, it's included to teach proper shared memory synchronization patterns for more complex scenarios where threads need to coordinate access to shared data.
+
 ## Code to complete
 
 ```mojo
@@ -65,7 +67,7 @@ The key insight is how LayoutTensor simplifies shared memory management while ma
 
 1. Create shared memory with tensor builder
 2. Load data with natural indexing: `shared[local_i] = a[global_i]`
-3. Synchronize with `barrier()`
+3. Synchronize with `barrier()` (educational - not strictly needed here)
 4. Process data using shared memory indices
 5. Guard against out-of-bounds access
 </div>
@@ -137,6 +139,8 @@ This solution demonstrates how LayoutTensor simplifies shared memory usage while
      ```
    - Process phase: Each thread adds 10 to its shared tensor value
    - Result: `output[global_i] = shared[local_i] + 10 = 11`
+
+   **Note**: In this specific case, the `barrier()` isn't strictly necessary since each thread only writes to and reads from its own shared memory location (`shared[local_i]`). However, it's included for educational purposes to demonstrate proper shared memory synchronization patterns that are essential when threads need to access each other's data.
 
 3. **LayoutTensor benefits**
    - Shared memory allocation:

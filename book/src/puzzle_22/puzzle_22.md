@@ -1,160 +1,108 @@
-# Part VI: GPU Warp Programming - Synchronized Execution Primitives
+# Puzzle 22: Kernel Fusion and Custom Backward Pass
+
+> ## Kernel fusion and autograd integration
+>
+> We're continuing Part IV with a focus on **kernel fusion** and **autograd integration**.
+>
+> Building on [Puzzle 21](../puzzle_21/puzzle_21.md), you'll now explore how to combine multiple operations into a single efficient kernel and integrate it with PyTorch's autograd system. You'll learn:
+> - How kernel fusion improves performance in both forward and backward passes
+> - Why custom backward passes are crucial for fused operations
+> - How to design fused kernels with proper gradient flow
+> - The performance implications of different fusion strategies
+>
+> This puzzle demonstrates that **how you combine operations** can be as important as **how you implement them**.
 
 ## Overview
 
-Welcome to **Part VI: GPU Warp Programming**! This section introduces you to GPU **warp-level primitives** - hardware-accelerated operations that leverage synchronized thread execution within warps. You'll master the art of using built-in warp operations to replace complex shared memory patterns with simple, efficient function calls.
+In this puzzle, you'll implement fused LayerNorm + Linear operations with both forward and backward passes. While both fused and unfused implementations produce identical results, they use different strategies that lead to significant performance differences.
 
-**What you'll achieve:** Transform from complex shared memory + barrier + tree reduction patterns to elegant warp primitive calls that leverage hardware synchronization.
+You'll compare:
+- **Unfused approach**: Separate kernels for LayerNorm and Linear
+- **Fused kernel**: Combined operation in a single kernel
+- **Custom backward pass**: Gradient computation for fused operations
 
-**Key insight:** _GPU warps execute in lockstep - Mojo's warp operations harness this synchronization to provide powerful parallel primitives with zero explicit synchronization._
+This comparison teaches the critical importance of kernel fusion and proper gradient computation in deep learning operations.
 
-## What you'll learn
+## Background: LayerNorm + Linear operations
 
-### **GPU warp execution model**
-Understand the fundamental hardware unit of GPU parallelism:
+LayerNorm and Linear are fundamental operations in transformer architectures, particularly in attention mechanisms and feed-forward networks. Here's how they're typically used:
 
-```
-GPU Block (e.g., 256 threads)
-├── Warp 0 (32 threads, SIMT lockstep execution)
-│   ├── Lane 0  ─┐
-│   ├── Lane 1   │ All execute same instruction
-│   ├── Lane 2   │ at same time (SIMT)
-│   │   ...      │
-│   └── Lane 31 ─┘
-├── Warp 1 (32 threads, independent)
-├── Warp 2 (32 threads, independent)
-└── ...
-```
+```python
+import torch
+import torch.nn.functional as F
 
-**Hardware reality:**
-- **32 threads per warp** on NVIDIA GPUs (`WARP_SIZE=32`)
-- **32 or 64 threads per warp** on AMD GPUs (`WARP_SIZE=32 or 64`)
-- **Lockstep execution**: All threads in a warp execute the same instruction simultaneously
-- **Zero synchronization cost**: Warp operations happen instantly within each warp
+# Input: hidden states
+x = torch.randn(batch_size, seq_len, hidden_dim)
 
-### **Warp operations available in Mojo**
-Master the core warp primitives from `gpu.warp`:
+# LayerNorm parameters
+ln_weight = torch.ones(hidden_dim)  # scale parameter (γ)
+ln_bias = torch.zeros(hidden_dim)   # shift parameter (β)
 
-1. **`sum(value)`**: Sum all values across warp lanes
-2. **`shuffle_idx(value, lane)`**: Get value from specific lane
-3. **`shuffle_down(value, delta)`**: Get value from lane+delta
-4. **`prefix_sum(value)`**: Compute prefix sum across lanes
-5. **`lane_id()`**: Get current thread's lane number (0-31 or 0-63)
+# Linear layer parameters
+linear_weight = torch.randn(output_dim, hidden_dim)
+linear_bias = torch.zeros(output_dim)
 
-### **Performance transformation example**
-```mojo
-# Complex pattern we have seen earlier (from p10.mojo):
-shared = tb[dtype]().row_major[WARP_SIZE]().shared().alloc()
-shared[local_i] = partial_product
-barrier()
+# Unfused operations (with autograd)
+ln_output = F.layer_norm(x, [hidden_dim], weight=ln_weight, bias=ln_bias)
+output = F.linear(ln_output, linear_weight, linear_bias)
 
-# Safe tree reduction would require read-write separation:
-stride = SIZE // 2
-while stride > 0:
-    var temp_val: Scalar[dtype] = 0
-    if local_i < stride:
-        temp_val = shared[local_i + stride]  # Read phase
-    barrier()
-    if local_i < stride:
-        shared[local_i] += temp_val  # Write phase
-    barrier()
-    stride //= 2
-
-# But warp operations eliminate all this complexity:
-total = sum(partial_product)  # No barriers, no race conditions!
+# Fused operation (custom implementation)
+# This is what you'll implement in this puzzle
+output_fused = fused_layernorm_linear(x, ln_weight, ln_bias, linear_weight, linear_bias)
 ```
 
-### **When warp operations excel**
-Learn the performance characteristics:
-```
-Problem Scale         Traditional    Warp Operations
-Single warp (32)      Fast          Fastest (no barriers)
-Few warps (128)       Good          Excellent (minimal overhead)
-Many warps (1024+)    Good          Outstanding (scales linearly)
-Massive (16K+)        Bottlenecked  Memory-bandwidth limited
-```
+When fused, these operations are combined into a single efficient kernel that:
+- Reduces memory bandwidth usage
+- Minimizes kernel launch overhead
+- Improves cache utilization
+- Eliminates intermediate allocations
 
-## Prerequisites
+In practice, this fusion can provide up to 1.5-2x speedup in both forward and backward passes, which is crucial for transformer training efficiency.
 
-Before diving into warp programming, ensure you're comfortable with:
-- **Part V functional patterns**: Elementwise, tiled, and vectorized approaches
-- **GPU thread hierarchy**: Understanding blocks, warps, and threads
-- **LayoutTensor operations**: Loading, storing, and tensor manipulation
-- **Shared memory concepts**: Why barriers and tree reduction are complex
+### Why custom backward passes matter
+
+PyTorch's autograd system automatically computes gradients for individual operations, but fused operations require custom backward passes to:
+- Maintain numerical stability
+- Ensure proper gradient flow
+- Optimize memory access patterns
+- Handle atomic operations for gradient accumulation
 
 ## Learning path
 
-### **1. SIMT execution model**
-**→ [Warp Lanes & SIMT Execution](./warp_simt.md)**
+This puzzle is structured in two parts to build your understanding systematically:
 
-Understand the hardware foundation that makes warp operations possible.
+### **[Forward pass implementation](./forward_pass.md)**
 
-**What you'll master:**
-- Single Instruction, Multiple Thread (SIMT) execution model
-- Warp divergence and convergence patterns
-- Lane synchronization within warps
-- Hardware vs software thread management
+Start here to implement the fused forward kernel and understand kernel fusion benefits.
 
-**Key insight:** Warps are the fundamental unit of GPU execution - understanding SIMT unlocks warp programming.
+**What you'll do:**
+- Implement both unfused and fused forward kernels
+- Learn fundamental kernel fusion techniques
+- See the same operations implemented with different strategies
+- Understand performance implications of fusion
+- Master memory access patterns for optimal performance
 
-### **2. Warp sum fundamentals**
-**→ [warp.sum() Essentials](./warp_sum.md)**
+### **[Backward pass implementation](./backward_pass.md)**
 
-Master the most important warp operation through dot product implementation.
+Deep dive into autograd integration and gradient computation.
 
-**What you'll master:**
-- Replacing shared memory + barriers with `sum()`
-- Cross-GPU architecture compatibility (`WARP_SIZE`)
-- Kernel vs functional programming patterns with warps
-- Performance comparison with traditional approaches
-
-**Key pattern:**
-```mojo
-partial_result = compute_per_lane_value()
-total = sum(partial_result)  # Magic happens here!
-if lane_id() == 0:
-    output[0] = total
-```
-
-### **3. When to use warp programming**
-**→ [When to Use Warp Programming](./warp_extra.md)**
-
-Learn the decision framework for choosing warp operations over alternatives.
-
-**What you'll master:**
-- Problem characteristics that favor warp operations
-- Performance scaling patterns with warp count
-- Memory bandwidth vs computation trade-offs
-- Warp operation selection guidelines
-
-**Decision framework:** When reduction operations become the bottleneck, warp primitives often provide the breakthrough.
-
-## Key concepts to master
-
-### **Hardware-software alignment**
-Understanding how Mojo's warp operations map to GPU hardware:
-- **SIMT execution**: All lanes execute same instruction simultaneously
-- **Built-in synchronization**: No explicit barriers needed within warps
-- **Cross-architecture support**: `WARP_SIZE` handles NVIDIA vs AMD differences
-
-### **Pattern transformation**
-Converting complex parallel patterns to warp primitives:
-- **Tree reduction** → `sum()`
-- **Prefix computation** → `prefix_sum()`
-- **Data shuffling** → `shuffle_idx()`, `shuffle_down()`
-
-### **Performance characteristics**
-Recognizing when warp operations provide advantages:
-- **Small to medium problems**: Eliminates barrier overhead
-- **Large problems**: Reduces memory traffic and improves cache utilization
-- **Regular patterns**: Warp operations excel with predictable access patterns
+**What you'll learn:**
+- How to implement custom backward passes
+- Why proper gradient flow is crucial
+- Real-world implications for training efficiency
+- Optimization strategies for backward operations
+- Mathematical foundations of gradient computation
+- Atomic operations for gradient accumulation
+- Numerical stability in backward passes
 
 ## Getting started
 
-Ready to harness GPU warp-level parallelism? Start with understanding the SIMT execution model, then dive into practical warp sum implementation, and finish with the strategic decision framework.
+Ready to explore kernel fusion and autograd integration? Start with the **[Forward pass implementation](./forward_pass.md)** to implement the fused kernel, then move to **[Backward pass implementation](./backward_pass.md)** to understand gradient computation.
 
-💡 **Success tip**: Think of warps as **synchronized vector units** rather than independent threads. This mental model will guide you toward effective warp programming patterns.
+The puzzle includes a comprehensive testing framework that verifies:
+- Numerical correctness against PyTorch's implementation for both forward and backward passes
+- Performance comparison between our CPU and GPU implementations
+- Gradient computation accuracy for all parameters (input, LayerNorm weights/bias, Linear weights/bias)
+- Memory usage optimization through kernel fusion
 
-**Learning objective**: By the end of Part VI, you'll recognize when warp operations can replace complex synchronization patterns, enabling you to write simpler, faster GPU code.
-
-**Ready to begin?** Start with **[SIMT Execution Model](./warp_simt.md)** and discover the power of warp-level programming!
+💡 **Success tip:** Pay attention to how the different implementations (fused vs unfused) affect both forward and backward pass performance - this insight applies to many deep learning operations beyond LayerNorm + Linear. The backward pass implementation is particularly important as it directly impacts training efficiency and numerical stability.

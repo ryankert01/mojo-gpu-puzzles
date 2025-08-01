@@ -1,153 +1,78 @@
-# Part V: Mojo Functional Patterns - High-Level GPU Programming
+# Puzzle 21: Embedding Op
+
+> ## Memory access patterns and performance
+>
+> We're continuing Part IV with a focus on **memory-bound operations** and **GPU memory access optimization**.
+>
+> Building on [Puzzle 20](../puzzle_20/puzzle_20.md), you'll now explore how different kernel implementations of the same operation can have dramatically different performance characteristics. You'll learn:
+> - How GPU memory coalescing affects performance
+> - Why grid configuration matters for memory-bound operations
+> - How to design kernels with optimal memory access patterns
+> - The performance implications of different threading strategies
+>
+> This puzzle demonstrates that **how you access memory** can be more important than **what computation you perform**.
 
 ## Overview
 
-Welcome to **Part V: Mojo Functional Patterns**! This section introduces you to Mojo's revolutionary approach to GPU programming through **functional patterns** that abstract away low-level complexity while delivering exceptional performance. You'll master the art of writing clean, efficient parallel code that scales across thousands of GPU threads.
+In this puzzle, you'll implement two different GPU kernels for embedding operations - a fundamental component in neural networks. While both kernels produce identical results, they use different memory access patterns that lead to significant performance differences.
 
-**What you'll achieve:** Transform from manual GPU kernel programming to high-level functional patterns that automatically handle vectorization, memory optimization, and performance tuning.
+You'll compare:
+- **1D coalesced kernel**: Optimized for memory bandwidth with consecutive memory accesses
+- **2D non-coalesced kernel**: Suboptimal memory access pattern for comparison
 
-**Key insight:** _Modern GPU programming doesn't require sacrificing elegance for performance - Mojo's functional patterns give you both._
+This comparison teaches the critical importance of memory coalescing in GPU kernel performance.
 
-## What you'll learn
+## Background: Embedding operations
 
-### **GPU execution hierarchy**
-Understand the fundamental relationship between GPU threads and SIMD operations:
+An embedding operation converts discrete token indices into dense vector representations:
 
-```
-GPU Device
-├── Grid (your entire problem)
-│   ├── Block 1 (group of threads, shared memory)
-│   │   ├── Warp 1 (32 threads, lockstep execution) --> We'll learn in Part VI
-│   │   │   ├── Thread 1 → SIMD
-│   │   │   ├── Thread 2 → SIMD
-│   │   │   └── ... (32 threads total)
-│   │   └── Warp 2 (32 threads)
-│   └── Block 2 (independent group)
-```
+```python
+# Input: token indices
+indices = [[1, 5, 2], [7, 1, 9]]           # Shape: [batch_size, seq_len]
 
-**What Mojo abstracts for you:**
-- Grid/Block configuration automatically calculated
-- Warp management handled transparently
-- Thread scheduling optimized automatically
-- Memory hierarchy optimization built-in
+# Embedding table (learned parameters)
+embedding_table = [                        # Shape: [vocab_size, embed_dim]
+    [0.1, 0.2, 0.3, 0.4],  # Token 0
+    [0.5, 0.6, 0.7, 0.8],  # Token 1
+    [0.9, 1.0, 1.1, 1.2],  # Token 2
+    # ... more tokens
+]
 
-💡 **Note**: While this Part focuses on functional patterns, **warp-level programming** and advanced GPU memory management will be covered in detail in **[Part VI](../puzzle_22/puzzle_22.md)**.
-
-### **Four fundamental patterns**
-Master the complete spectrum of GPU functional programming:
-
-1. **Elementwise**: Maximum parallelism with automatic SIMD vectorization
-2. **Tiled**: Memory-efficient processing with cache optimization
-3. **Manual vectorization**: Expert-level control over SIMD operations
-4. **Mojo vectorize**: Safe, automatic vectorization with bounds checking
-
-### **Performance patterns you'll recognize**
-```
-Problem: Add two 1024-element vectors (SIZE=1024, SIMD_WIDTH=4)
-
-Elementwise:     256 threads × 1 SIMD op   = High parallelism
-Tiled:           32 threads  × 8 SIMD ops  = Cache optimization
-Manual:          8 threads   × 32 SIMD ops = Maximum control
-Mojo vectorize:  32 threads  × 8 SIMD ops  = Automatic safety
+# Output: embedded vectors
+output[0,0] = embedding_table[1]  # [0.5, 0.6, 0.7, 0.8]
+output[0,1] = embedding_table[5]  # lookup token 5's embedding
+output[0,2] = embedding_table[2]  # [0.9, 1.0, 1.1, 1.2]
+# ... and so on
 ```
 
-### 📊 **Real performance insights**
-Learn to interpret empirical benchmark results:
-```
-Benchmark Results (SIZE=1,048,576):
-elementwise:        11.34ms  ← Maximum parallelism wins at scale
-tiled:              12.04ms  ← Good balance of locality and parallelism
-manual_vectorized:  15.75ms  ← Complex indexing hurts simple operations
-vectorized:         13.38ms  ← Automatic optimization overhead
-```
-
-## Prerequisites
-
-Before diving into functional patterns, ensure you're comfortable with:
-- **Basic GPU concepts**: Memory hierarchy, thread execution, SIMD operations
-- **Mojo fundamentals**: Parameter functions, compile-time specialization, capturing semantics
-- **LayoutTensor operations**: Loading, storing, and tensor manipulation
-- **GPU memory management**: Buffer allocation, host-device synchronization
+This operation is **memory-bound** - performance depends on how efficiently you can read from the embedding table and write to the output tensor.
 
 ## Learning path
 
-### **1. Elementwise operations**
-**→ [Elementwise - Basic GPU Functional Operations](./elementwise.md)**
+This puzzle is structured in two parts to build your understanding systematically:
 
-Start with the foundation: automatic thread management and SIMD vectorization.
+### **[Simple embedding kernel](./simple_embedding_kernel.md)**
 
-**What you'll master:**
-- Functional GPU programming with `elementwise`
-- Automatic SIMD vectorization within GPU threads
-- LayoutTensor operations for safe memory access
-- Capturing semantics in nested functions
+Start here to implement the actual puzzle code and understand the kernel implementations.
 
-**Key pattern:**
-```mojo
-elementwise[add_function, SIMD_WIDTH, target="gpu"](total_size, ctx)
-```
+**What you'll do:**
+- Complete two different GPU embedding kernels (1D coalesced vs 2D non-coalesced)
+- Learn fundamental memory access patterns for GPU programming
+- See the same algorithm implemented with different threading strategies
+- Understand custom operation registration in Mojo
 
-### **2. Tiled processing**
-**→ [Tile - Memory-Efficient Tiled Processing](./tile.md)**
+### **[Performance comparison](./performance.md)**
 
-Build on elementwise with memory-optimized tiling patterns.
+Deep dive into why the kernels perform differently and the theory behind memory coalescing.
 
-**What you'll master:**
-- Tile-based memory organization for cache optimization
-- Sequential SIMD processing within tiles
-- Memory locality principles and cache-friendly access patterns
-- Thread-to-tile mapping vs thread-to-element mapping
-
-**Key insight:** Tiling trades parallel breadth for memory locality - fewer threads each doing more work with better cache utilization.
-
-### **3. Advanced vectorization**
-**→ [Vectorization - Fine-Grained SIMD Control](./vectorize.md)**
-
-Explore manual control and automatic vectorization strategies.
-
-**What you'll master:**
-- Manual SIMD operations with explicit index management
-- Mojo's vectorize function for safe, automatic vectorization
-- Chunk-based memory organization for optimal SIMD alignment
-- Performance trade-offs between manual control and safety
-
-**Two approaches:**
-- **Manual**: Direct control, maximum performance, complex indexing
-- **Mojo vectorize**: Automatic optimization, built-in safety, clean code
-
-### 🧠 **4. Threading vs SIMD concepts**
-**→ [GPU Threading vs SIMD - Understanding the Execution Hierarchy](./gpu-thread-vs-simd.md)**
-
-Understand the fundamental relationship between parallelism levels.
-
-**What you'll master:**
-- GPU threading hierarchy and hardware mapping
-- SIMD operations within GPU threads
-- Pattern comparison and thread-to-work mapping
-- Choosing the right pattern for different workloads
-
-**Key insight:** GPU threads provide the parallelism structure, while SIMD operations provide the vectorization within each thread.
-
-### 📊 **5. Performance benchmarking in Mojo**
-
-**→ [Benchmarking in Mojo](./benchmarking.md)**
-
-Learn to measure, analyze, and optimize GPU performance scientifically.
-
-**What you'll master:**
-- Mojo's built-in benchmarking framework
-- GPU-specific timing and synchronization challenges
-- Parameterized benchmark functions with compile-time specialization
-- Empirical performance analysis and pattern selection
-
-**Critical technique:** Using `keep()` to prevent compiler optimization of benchmarked code.
+**What you'll learn:**
+- Why memory coalescing matters for GPU performance
+- How thread organization affects memory bandwidth utilization
+- Real-world implications for neural network optimization
+- Optimization strategies for memory-bound operations
 
 ## Getting started
 
-Ready to transform your GPU programming skills? Start with the elementwise pattern and work through each section systematically. Each puzzle builds on the previous concepts while introducing new levels of sophistication.
+Ready to explore GPU memory optimization? Start with the **[Simple embedding kernel](./simple_embedding_kernel.md)** to implement the code, then move to **[Performance comparison](./performance.md)** to understand the performance implications.
 
-💡 **Success tip**: Focus on understanding the **why** behind each pattern, not just the **how**. The conceptual framework you develop here will serve you throughout your GPU programming career.
-
-**Learning objective**: By the end of Part V, you'll think in terms of functional patterns rather than low-level GPU mechanics, enabling you to write more maintainable, performant, and portable GPU code.
-
-**Ready to begin?** Start with **[Elementwise Operations](./elementwise.md)** and discover the power of functional GPU programming!
+💡 **Success tip:** Pay attention to how the different grid configurations (1D vs 2D) affect memory access patterns - this insight applies to many GPU programming scenarios beyond embeddings.

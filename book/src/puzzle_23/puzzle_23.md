@@ -1,156 +1,153 @@
-# Part VI: GPU Warp Programming - Communication Primitives
+# Puzzle 23: GPU Functional Programming Patterns
 
 ## Overview
 
-Welcome to **Puzzle 23: Warp Communication Primitives**! This puzzle introduces you to advanced GPU **warp-level communication operations** - hardware-accelerated primitives that enable efficient data exchange and coordination patterns within warps. You'll learn about using [shuffle_down](https://docs.modular.com/mojo/stdlib/gpu/warp/shuffle_down) and [broadcast](https://docs.modular.com/mojo/stdlib/gpu/warp/broadcast) to implement neighbor communication and collective coordination without complex shared memory patterns.
+Welcome to **Part V: Mojo Functional Patterns**! This section introduces you to Mojo's revolutionary approach to GPU programming through **functional patterns** that abstract away low-level complexity while delivering exceptional performance. You'll master the art of writing clean, efficient parallel code that scales across thousands of GPU threads.
 
-**What you'll achieve:** Transform from complex shared memory + indexing + boundary checking patterns to elegant warp communication calls that leverage hardware-optimized data movement.
+**What you'll achieve:** Transform from manual GPU kernel programming to high-level functional patterns that automatically handle vectorization, memory optimization, and performance tuning.
 
-**Key insight:** _GPU warps execute in lockstep - Mojo's warp communication operations harness this synchronization to provide powerful data exchange primitives with automatic boundary handling and zero explicit synchronization._
+**Key insight:** _Modern GPU programming doesn't require sacrificing elegance for performance - Mojo's functional patterns give you both._
 
 ## What you'll learn
 
-### **Warp communication model**
-Understand the fundamental communication patterns within GPU warps:
+### **GPU execution hierarchy**
+Understand the fundamental relationship between GPU threads and SIMD operations:
 
 ```
-GPU Warp (32 threads, SIMT lockstep execution)
-├── Lane 0  ──shuffle_down──> Lane 1  ──shuffle_down──> Lane 2
-├── Lane 1  ──shuffle_down──> Lane 2  ──shuffle_down──> Lane 3
-├── Lane 2  ──shuffle_down──> Lane 3  ──shuffle_down──> Lane 4
-│   ...
-└── Lane 31 ──shuffle_down──> undefined (boundary)
-
-Broadcast pattern:
-Lane 0 ──broadcast──> All lanes (0, 1, 2, ..., 31)
+GPU Device
+├── Grid (your entire problem)
+│   ├── Block 1 (group of threads, shared memory)
+│   │   ├── Warp 1 (32 threads, lockstep execution) --> We'll learn in Part VI
+│   │   │   ├── Thread 1 → SIMD
+│   │   │   ├── Thread 2 → SIMD
+│   │   │   └── ... (32 threads total)
+│   │   └── Warp 2 (32 threads)
+│   └── Block 2 (independent group)
 ```
 
-**Hardware reality:**
-- **Register-to-register communication**: Data moves directly between thread registers
-- **Zero memory overhead**: No shared memory allocation required
-- **Automatic boundary handling**: Hardware manages warp edge cases
-- **Single-cycle operations**: Communication happens in one instruction cycle
+**What Mojo abstracts for you:**
+- Grid/Block configuration automatically calculated
+- Warp management handled transparently
+- Thread scheduling optimized automatically
+- Memory hierarchy optimization built-in
 
-### **Warp communication operations in Mojo**
-Master the core communication primitives from `gpu.warp`:
+💡 **Note**: While this Part focuses on functional patterns, **warp-level programming** and advanced GPU memory management will be covered in detail in **[Part VII](../puzzle_24/puzzle_24.md)**.
 
-1. **[`shuffle_down(value, offset)`](https://docs.modular.com/mojo/stdlib/gpu/warp/shuffle_down)**: Get value from lane at higher index (neighbor access)
-2. **[`broadcast(value)`](https://docs.modular.com/mojo/stdlib/gpu/warp/broadcast)**: Share lane 0's value with all other lanes (one-to-many)
-3. **[`shuffle_idx(value, lane)`](https://docs.modular.com/mojo/stdlib/gpu/warp/shuffle_idx)**: Get value from specific lane (random access)
-4. **[`shuffle_up(value, offset)`](https://docs.modular.com/mojo/stdlib/gpu/warp/shuffle_up)**: Get value from lane at lower index (reverse neighbor)
+### **Four fundamental patterns**
+Master the complete spectrum of GPU functional programming:
 
-> **Note:** This puzzle focuses on `shuffle_down()` and `broadcast()` as the most commonly used communication patterns. For complete coverage of all warp operations, see the [Mojo GPU Warp Documentation](https://docs.modular.com/mojo/stdlib/gpu/warp/).
+1. **Elementwise**: Maximum parallelism with automatic SIMD vectorization
+2. **Tiled**: Memory-efficient processing with cache optimization
+3. **Manual vectorization**: Expert-level control over SIMD operations
+4. **Mojo vectorize**: Safe, automatic vectorization with bounds checking
 
-### **Performance transformation example**
-```mojo
-# Complex neighbor access pattern (traditional approach):
-shared = tb[dtype]().row_major[WARP_SIZE]().shared().alloc()
-shared[local_i] = input[global_i]
-barrier()
-if local_i < WARP_SIZE - 1:
-    next_value = shared[local_i + 1]  # Neighbor access
-    result = next_value - shared[local_i]
-else:
-    result = 0  # Boundary handling
-barrier()
+### **Performance patterns you'll recognize**
+```
+Problem: Add two 1024-element vectors (SIZE=1024, SIMD_WIDTH=4)
 
-# Warp communication eliminates all this complexity:
-current_val = input[global_i]
-next_val = shuffle_down(current_val, 1)  # Direct neighbor access
-if lane < WARP_SIZE - 1:
-    result = next_val - current_val
-else:
-    result = 0
+Elementwise:     256 threads × 1 SIMD op   = High parallelism
+Tiled:           32 threads  × 8 SIMD ops  = Cache optimization
+Manual:          8 threads   × 32 SIMD ops = Maximum control
+Mojo vectorize:  32 threads  × 8 SIMD ops  = Automatic safety
 ```
 
-### **When warp communication excels**
-Learn the performance characteristics:
-
-| Communication Pattern | Traditional | Warp Operations |
-|----------------------|-------------|-----------------|
-| Neighbor access | Shared memory | Register-to-register |
-| Stencil operations | Complex indexing | Simple shuffle patterns |
-| Block coordination | Barriers + shared | Single broadcast |
-| Boundary handling | Manual checks | Hardware automatic |
+### 📊 **Real performance insights**
+Learn to interpret empirical benchmark results:
+```
+Benchmark Results (SIZE=1,048,576):
+elementwise:        11.34ms  ← Maximum parallelism wins at scale
+tiled:              12.04ms  ← Good balance of locality and parallelism
+manual_vectorized:  15.75ms  ← Complex indexing hurts simple operations
+vectorized:         13.38ms  ← Automatic optimization overhead
+```
 
 ## Prerequisites
 
-Before diving into warp communication, ensure you're comfortable with:
-- **Part VI warp fundamentals**: Understanding SIMT execution and basic warp operations (see [Puzzle 22](../puzzle_22/puzzle_22.md))
-- **GPU thread hierarchy**: Blocks, warps, and lane numbering
+Before diving into functional patterns, ensure you're comfortable with:
+- **Basic GPU concepts**: Memory hierarchy, thread execution, SIMD operations
+- **Mojo fundamentals**: Parameter functions, compile-time specialization, capturing semantics
 - **LayoutTensor operations**: Loading, storing, and tensor manipulation
-- **Boundary condition handling**: Managing edge cases in parallel algorithms
+- **GPU memory management**: Buffer allocation, host-device synchronization
 
 ## Learning path
 
-### **1. Neighbor communication with shuffle_down**
-**→ [Warp Shuffle Down](./warp_shuffle_down.md)**
+### **1. Elementwise operations**
+**→ [Elementwise - Basic GPU Functional Operations](./elementwise.md)**
 
-Master neighbor-based communication patterns for stencil operations and finite differences.
+Start with the foundation: automatic thread management and SIMD vectorization.
 
 **What you'll master:**
-- Using `shuffle_down()` for accessing adjacent lane data
-- Implementing finite differences and moving averages
-- Handling warp boundaries automatically
-- Multi-offset shuffling for extended neighbor access
+- Functional GPU programming with `elementwise`
+- Automatic SIMD vectorization within GPU threads
+- LayoutTensor operations for safe memory access
+- Capturing semantics in nested functions
 
 **Key pattern:**
 ```mojo
-current_val = input[global_i]
-next_val = shuffle_down(current_val, 1)
-if lane < WARP_SIZE - 1:
-    result = compute_with_neighbors(current_val, next_val)
+elementwise[add_function, SIMD_WIDTH, target="gpu"](total_size, ctx)
 ```
 
-### **2. Collective coordination with broadcast**
-**→ [Warp Broadcast](./warp_broadcast.md)**
+### **2. Tiled processing**
+**→ [Tile - Memory-Efficient Tiled Processing](./tile.md)**
 
-Master one-to-many communication patterns for block-level coordination and collective decision-making.
+Build on elementwise with memory-optimized tiling patterns.
 
 **What you'll master:**
-- Using `broadcast()` for sharing computed values across lanes
-- Implementing block-level statistics and collective decisions
-- Combining broadcast with conditional logic
-- Advanced broadcast-shuffle coordination patterns
+- Tile-based memory organization for cache optimization
+- Sequential SIMD processing within tiles
+- Memory locality principles and cache-friendly access patterns
+- Thread-to-tile mapping vs thread-to-element mapping
 
-**Key pattern:**
-```mojo
-var shared_value = 0.0
-if lane == 0:
-    shared_value = compute_block_statistic()
-shared_value = broadcast(shared_value)
-result = use_shared_value(shared_value, local_data)
-```
+**Key insight:** Tiling trades parallel breadth for memory locality - fewer threads each doing more work with better cache utilization.
 
-## Key concepts
+### **3. Advanced vectorization**
+**→ [Vectorization - Fine-Grained SIMD Control](./vectorize.md)**
 
-### **Communication patterns**
-Understanding fundamental warp communication paradigms:
-- **Neighbor communication**: Lane-to-adjacent-lane data exchange
-- **Collective coordination**: One-lane-to-all-lanes information sharing
-- **Stencil operations**: Accessing fixed patterns of neighboring data
-- **Boundary handling**: Managing communication at warp edges
+Explore manual control and automatic vectorization strategies.
 
-### **Hardware optimization**
-Recognizing how warp communication maps to GPU hardware:
-- **Register file communication**: Direct inter-thread register access
-- **SIMT execution**: All lanes execute communication simultaneously
-- **Zero latency**: Communication happens within the execution unit
-- **Automatic synchronization**: No explicit barriers needed
+**What you'll master:**
+- Manual SIMD operations with explicit index management
+- Mojo's vectorize function for safe, automatic vectorization
+- Chunk-based memory organization for optimal SIMD alignment
+- Performance trade-offs between manual control and safety
 
-### **Algorithm transformation**
-Converting traditional parallel patterns to warp communication:
-- **Array neighbor access** → `shuffle_down()`
-- **Shared memory coordination** → `broadcast()`
-- **Complex boundary logic** → Hardware-handled edge cases
-- **Multi-stage synchronization** → Single communication operations
+**Two approaches:**
+- **Manual**: Direct control, maximum performance, complex indexing
+- **Mojo vectorize**: Automatic optimization, built-in safety, clean code
+
+### 🧠 **4. Threading vs SIMD concepts**
+**→ [GPU Threading vs SIMD - Understanding the Execution Hierarchy](./gpu-thread-vs-simd.md)**
+
+Understand the fundamental relationship between parallelism levels.
+
+**What you'll master:**
+- GPU threading hierarchy and hardware mapping
+- SIMD operations within GPU threads
+- Pattern comparison and thread-to-work mapping
+- Choosing the right pattern for different workloads
+
+**Key insight:** GPU threads provide the parallelism structure, while SIMD operations provide the vectorization within each thread.
+
+### 📊 **5. Performance benchmarking in Mojo**
+
+**→ [Benchmarking in Mojo](./benchmarking.md)**
+
+Learn to measure, analyze, and optimize GPU performance scientifically.
+
+**What you'll master:**
+- Mojo's built-in benchmarking framework
+- GPU-specific timing and synchronization challenges
+- Parameterized benchmark functions with compile-time specialization
+- Empirical performance analysis and pattern selection
+
+**Critical technique:** Using `keep()` to prevent compiler optimization of benchmarked code.
 
 ## Getting started
 
-Ready to harness GPU warp-level communication? Start with neighbor-based shuffle operations to understand the foundation, then progress to collective broadcast patterns for advanced coordination.
+Ready to transform your GPU programming skills? Start with the elementwise pattern and work through each section systematically. Each puzzle builds on the previous concepts while introducing new levels of sophistication.
 
-💡 **Success tip**: Think of warp communication as **hardware-accelerated message passing** between threads in the same warp. This mental model will guide you toward efficient communication patterns that leverage the GPU's SIMT architecture.
+💡 **Success tip**: Focus on understanding the **why** behind each pattern, not just the **how**. The conceptual framework you develop here will serve you throughout your GPU programming career.
 
-**Learning objective**: By the end of Puzzle 23, you'll recognize when warp communication can replace complex shared memory patterns, enabling you to write simpler, faster neighbor-based and coordination algorithms.
+**Learning objective**: By the end of Part V, you'll think in terms of functional patterns rather than low-level GPU mechanics, enabling you to write more maintainable, performant, and portable GPU code.
 
-**Ready to begin?** Start with **[Warp Shuffle Down Operations](./warp_shuffle_down.md)** to master neighbor communication, then advance to **[Warp Broadcast Operations](./warp_broadcast.md)** for collective coordination patterns!
+**Ready to begin?** Start with **[Elementwise Operations](./elementwise.md)** and discover the power of functional GPU programming!

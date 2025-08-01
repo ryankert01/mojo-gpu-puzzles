@@ -1,148 +1,52 @@
-# Puzzle 17: Attention Op
+# Puzzle 17: 1D Convolution Op
+
+> ## Bridging to Python with MAX Graph
+>
+> We're now entering Part IV of our GPU puzzle journey: **Interfacing with Python via MAX Graph Custom Ops**.
+>
+> In previous puzzles, we've learned how to write efficient GPU kernels in Mojo. Now we'll explore how to:
+> - Package these kernels as custom operations that can be called from Python
+> - Integrate with the MAX Graph system for accelerated machine learning
+> - Bridge the gap between high-level Python APIs and low-level GPU code
+>
+> This integration allows us to leverage the performance of Mojo GPU kernels while working in familiar Python environments.
 
 ## Overview
 
-In this puzzle, we'll implement the attention mechanism as a custom MAX Graph operation. Attention is a fundamental building block of modern neural networks, poplularized particularly [transformers](https://arxiv.org/abs/1706.03762), that allows models to focus on relevant parts of the input when making predictions.
+In [Puzzle 13](../puzzle_13/puzzle_13.md), we implemented a 1D convolution kernel that runs efficiently on the GPU. Now we'll take this kernel and transform it into a custom operation that can be called directly from Python using [MAX Graph](https://docs.modular.com/max/api/python/graph/).
 
-Mathematically, the attention function is defined as:
+The 1D convolution kernel we'll be working with is already implemented:
 
-$$\\Large \\text{Attention}(Q, K, V) = \\text{softmax}(Q \\cdot K^T) \\cdot V$$
-
-Where:
-- \\(Q\\) is the **query vector** of shape \\((d,)\\) - represents what we're looking for
-- \\(K\\) is the **key matrix** of shape \\((\text{seq\_len}, d)\\) - represents what's available to match against
-- \\(V\\) is the **value matrix** of shape \\((\text{seq\_len}, d)\\) - represents the information to retrieve
-- The output is a **weighted combination** vector of shape \\((d,)\\)
-
-The computation involves three main steps:
-1. **Attention Scores**: Compute \\(Q \cdot K^T\\) to measure how well the query matches each key vector
-2. **Attention Weights**: Apply softmax to convert scores into a probability distribution (weights sum to 1)
-3. **Weighted Sum**: Combine value vectors using attention weights to produce the final output
-
-## Understanding attention: a step-by-step breakdown
-
-Think of attention as a **smart lookup mechanism**. Given a query (what you're looking for), attention finds the most relevant information from a collection of key-value pairs:
-
-1. **Step 1 - Similarity Matching**: Compare your query \\(Q\\) against all keys \\(K\\) to get similarity scores
-   - Compute \\(Q \cdot K^T\\) where each score measures how well \\(Q\\) matches each key vector
-   - Higher scores = better matches
-
-2. **Step 2 - Probability Distribution**: Convert raw scores into normalized weights
-   - Apply softmax to ensure all weights sum to 1.0
-   - This creates a probability distribution over which values to focus on
-
-3. **Step 3 - Weighted Retrieval**: Combine values using the attention weights
-   - Multiply each value vector by its corresponding weight
-   - Sum everything up to get the final output
-
-**Real-world analogy**: Imagine searching a library. Your query is what you want to find, the book titles are keys, and the book contents are values. Attention computes how relevant each book is to your query, then gives you a summary weighted by relevance.
-
-### Visual computation flow
-
-```
-Input:  Q(16,)    K(16,16)    V(16,16)
-         ↓           ↓           ↓
-Step 1: Q(1,16) @ K^T(16,16) → Scores(1,16)
-         ↓
-Step 2: softmax(Scores) → Weights(1,16)  [sum = 1.0]
-         ↓
-Step 3: Weights(1,16) @ V(16,16) → Output(1,16) → reshape → Output(16,)
+```mojo
+{{#include ../../../problems/p17/op/conv1d.mojo:conv1d_kernel}}
 ```
 
-**Key insight**: We reshape the query vector \\(Q\\) from shape \\((16,)\\) to \\((1,16)\\) so we can use matrix multiplication instead of manual dot products. This allows us to leverage the highly optimized tiled matmul kernel from Puzzle 14!
+The key aspects of this puzzle include:
 
-Our GPU implementation **reuses and combines optimized kernels from previous puzzles**:
-- **[Tiled matrix multiplication from Puzzle 14](../puzzle_14/puzzle_14.md)** for efficient \\(Q \cdot K^T\\) and \\(\text{weights} \cdot V\\) operations
-- **Shared memory transpose** for computing \\(K^T\\) efficiently
-- **[Parallel softmax from Puzzle 16](../puzzle_16/puzzle_16.md)** for numerically stable attention weight computation
+1. **Custom op registration**: Understanding how to expose Mojo functions to Python via the `@compiler.register` decorator
+2. **Packaging custom ops**: Learning how to package Mojo code for use with MAX Graph
+3. **Python integration**: Calling custom operations from Python through MAX Graph
+4. **Cross-language data flow**: Managing data types and memory between Python and GPU
 
-> **🔄 Kernel Reuse Strategy**: This puzzle demonstrates how to build complex operations by combining proven, optimized kernels from previous puzzles. Rather than writing everything from scratch, we leverage the `matmul_idiomatic_tiled` from Puzzle 14 and `softmax_kernel` from Puzzle 16, showcasing the power of modular GPU kernel design.
+This custom operation will:
+- Accept [NumPy](https://numpy.org/doc/stable/) arrays as input from Python
+- Transfer this data to the GPU
+- Execute our optimized convolution kernel
+- Return the results back to Python
 
-## Key concepts
-
-- Vector attention mechanism for sequence processing
-- **Kernel reuse**: Leveraging proven implementations from [Puzzle 14](../puzzle_14/puzzle_14.md) and [Puzzle 16](../puzzle_16/puzzle_16.md)
-- Efficient matrix multiplication using shared memory tiling
-- Memory-optimized tensor reshaping to minimize buffer allocation
-- Integration of multiple optimized kernels into a single operation
-- Custom MAX Graph operation with multi-input support
-- CPU fallback implementation for compatibility
-
-## Configuration
-
-- **Sequence length**: \\(\text{SEQ\_LEN} = 16\\) - number of key/value vectors in our sequence
-- **Model dimension**: \\(\text{D} = 16\\) - dimensionality of each vector (query, keys, values)
-- **Threads per block**: \\(\text{TPB} = 16\\) - matches SEQ_LEN for optimal softmax performance
-- **Grid dimensions**: Computed dynamically to handle different matrix sizes efficiently
-- **Shared memory**: Utilized in transpose, matmul, and softmax kernels for performance
-
-Layout configuration:
-- Query tensor: `Layout.row_major(d)`
-- Key tensor: `Layout.row_major(seq_len, d)`
-- Value tensor: `Layout.row_major(seq_len, d)`
-- Output tensor: `Layout.row_major(d)`
-- Custom op parameters: `{"seq_len": seq_len, "d": d, "dtype": dtype}`
-
-Key aspects of this puzzle include:
-
-1. **Multi-kernel orchestration**: Combining transpose, matmul, and softmax operations
-2. **Memory optimization**: Using reshape operations and buffer reuse to minimize allocations
-3. **Numerical stability**: Leveraging the proven softmax implementation from [Puzzle 16](../puzzle_16/puzzle_16.md)
-4. **Performance optimization**: Using tiled algorithms from [Puzzle 14](../puzzle_14/puzzle_14.md) for all matrix operations
-5. **Multi-input operations**: Handling three input tensors (Q, K, V) in a single custom op
-
-Our attention custom operation will:
-- Accept query, key, and value tensors from Python
-- Process them efficiently on GPU using optimized kernels
-- Return the attention-weighted output vector
-- Match the results of NumPy reference implementation
+When you complete this puzzle, you'll have created a seamless bridge between Python's rich ecosystem and Mojo's powerful GPU performance.
 
 ## Code to complete
 
-To complete this puzzle, we'll leverage the tiled matmul kernel from [Puzzle 14](../puzzle_14/puzzle_14.md) and the softmax kernel from [Puzzle 16](../puzzle_16/puzzle_16.md). You only need to implement the transpose kernel in the Mojo file using shared memory.
-
-### 1. Implement the transpose kernel
+To complete this puzzle, you only need to fill one line to call the `conv1d_kernel`:
 
 ```mojo
-{{#include ../../../problems/p17/op/attention.mojo:transpose_kernel}}
+{{#include ../../../problems/p17/op/conv1d.mojo:conv1d_custom_op}}
 ```
-<a href="{{#include ../_includes/repo_url.md}}/blob/main/problems/p17/op/attention.mojo" class="filename">View full file: problems/p17/op/attention.mojo</a>
+<a href="{{#include ../_includes/repo_url.md}}/blob/main/problems/p17/op/conv1d.mojo" class="filename">View full file: problems/p17/op/conv1d.mojo</a>
 
-<details>
-<summary><strong>Tips</strong></summary>
 
-<div class="solution-tips">
-
-**Transpose Kernel Implementation Guide:**
-
-1. **Shared Memory Setup**: Use `tb[dtype]().row_major[TPB, TPB]().shared().alloc()` to create a TPB×TPB shared memory tile for efficient data exchange between threads
-
-2. **Thread Indexing**: Map threads to matrix elements:
-   - `local_row = thread_idx.y`, `local_col = thread_idx.x` (position within the block)
-   - `global_row = block_idx.y * TPB + local_row` (position in the full matrix)
-
-3. **Two-Phase Operation**:
-   - **Phase 1**: Load data from global memory into shared memory with normal indexing
-   - **Phase 2**: Store data from shared memory to global memory with swapped indexing
-
-4. **Critical Synchronization**: Call `barrier()` between loading and storing to ensure all threads have finished loading before any thread starts storing
-
-5. **Transpose Magic**: The transpose happens through swapped indexing: `shared_tile[local_col, local_row]` instead of `shared_tile[local_row, local_col]`
-
-6. **Boundary Handling**: Check bounds when accessing global memory to avoid out-of-bounds reads/writes for matrices that don't perfectly divide by TPB
-
-7. **Memory Coalescing**: This pattern ensures both reads and writes are coalesced for optimal memory bandwidth utilization
-</div>
-</details>
-
-### 2. Orchestrate the attention
-
-```mojo
-{{#include ../../../problems/p17/op/attention.mojo:attention_orchestration}}
-```
-<a href="{{#include ../_includes/repo_url.md}}/blob/main/problems/p17/op/attention.mojo" class="filename">View full file: problems/p17/op/attention.mojo</a>
-
-### Test the kernels
+You can run the puzzle with:
 
 <div class="code-tabs" data-tab-group="package-manager">
   <div class="tab-buttons">
@@ -165,208 +69,189 @@ pixi run p17
   </div>
 </div>
 
-When successful, you should see output similar to on CPU and GPU:
+When successful, you should see output similar to:
 
 ```
-Input shapes: Q=(16,), K=(16, 16), V=(16, 16)
-Sample Q values: [ 0.04967142 -0.01382643  0.06476886  0.15230298 -0.02341534]
-Sample K[0] values: [-0.10128311  0.03142473 -0.09080241 -0.14123037  0.14656489]
-Sample V[0] values: [ 0.11631638  0.00102331 -0.09815087  0.04621035  0.01990597]
-
-================================================================================
-STEP-BY-STEP VECTOR ATTENTION COMPUTATION DEBUG
-================================================================================
-
-1. INPUT SHAPES:
-   Q shape: (16,) (query vector)
-   K shape: (16, 16) (key matrix)
-   V shape: (16, 16) (value matrix)
-   Q[:5]: [ 0.04967142 -0.01382643  0.06476886  0.15230298 -0.02341534]
-
-2. ATTENTION SCORES (K[i] · Q):
-   Scores shape: (16,)
-   Scores[:5]: [-0.03479404 -0.01563787  0.04834607  0.06764711  0.04001468]
-   Min: -0.061636, Max: 0.067647
-   Manual verification:
-     Q · K[0] = K[0] · Q = -0.034794 (computed: -0.034794)
-     Q · K[1] = K[1] · Q = -0.015638 (computed: -0.015638)
-     Q · K[2] = K[2] · Q = 0.048346 (computed: 0.048346)
-
-3. SOFTMAX:
-   Max score: 0.067647
-   Attention weights shape: (16,)
-   Attention weights[:5]: [0.05981331 0.06097015 0.06499878 0.0662655  0.06445949]
-   Sum: 1.000000 (should be 1.0)
-
-4. WEIGHTED SUM OF VALUES:
-   Output shape: (16,)
-   Output[:5]: [-0.00935538 -0.0243433   0.00306551  0.02346884  0.019306  ]
-   Output norm: 0.092764
-   Manual output[:5]: [-0.00935538 -0.0243433   0.00306551  0.02346884  0.019306  ]
-   Match: True
-
-================================================================================
-TESTING INDIVIDUAL OPERATIONS
-================================================================================
-
-Test 1: Vector Dot Product
-a · b = 3.000000
-
-Test 2: Matrix-Vector Multiplication
-M @ v = [ 3.  7. 11.]
-
-Test 3: Softmax
-Input: [1. 2. 3. 4.]
-Softmax: [0.0320586  0.08714432 0.2368828  0.6439143 ]
-Sum: 1.000000
-
-================================================================================
-TESTING FULL ATTENTION
-================================================================================
-Compiling attention graph on Device(type=cpu,id=0)
-Executing attention on Device(type=cpu,id=0)
-====================================================================================================
-
-CPU attention output[:5]: [-0.00935538 -0.02434331  0.00306551  0.02346884  0.019306  ]
-CPU matches NumPy: True
-Compiling attention graph on Device(type=gpu,id=0)
-Executing attention on Device(type=gpu,id=0)
-====================================================================================================
-
-GPU attention output[:5]: [-0.00935538 -0.0243433   0.00306551  0.02346884  0.019306  ]
-Expected output[:5]: [-0.00935538 -0.0243433   0.00306551  0.02346884  0.019306  ]
-GPU matches NumPy: True
-
-================================================================================
-FINAL VERIFICATION
-================================================================================
-✓ CPU implementation PASSED
-✓ GPU implementation PASSED
-
-Output vector norms:
-  CPU: 0.092764
-  GPU: 0.092764
-  Expected: 0.092764
+Input array: [ 0.  1.  2.  3.  4.  5.  6.  7.  8.  9. 10. 11. 12. 13. 14.]
+Convolution kernel: [0. 1. 2. 3.]
+Expected result (NumPy calculation): [14. 20. 26. 32. 38. 44. 50. 56. 62. 68. 74. 80. 41. 14.  0.]
+Compiling 1D convolution graph...
+Executing 1D convolution...
+1D Convolution result (custom Mojo kernel): [14. 20. 26. 32. 38. 44. 50. 56. 62. 68. 74. 80. 41. 14.  0.]
+Verification passed: Custom kernel results match NumPy calculation
 ```
 
-This indicates that your custom MAX Graph operation correctly implements the attention algorithm and produces results matching the NumPy reference implementation.
+This indicates that your custom MAX Graph operation correctly implements the 1D convolution algorithm.
+
 
 ## Solution
 
 <details class="solution-details">
 <summary></summary>
 
-To solve this puzzle, we need to implement the transpose kernel in Mojo and complete the Python graph definition for our attention custom operation. This puzzle builds upon concepts from previous puzzles, combining **tiled matrix multiplication from [Puzzle 14](../puzzle_14/puzzle_14.md)** and **softmax from [Puzzle 16](../puzzle_16/puzzle_16.md)** into a complete attention mechanism.
+To solve this puzzle, we need to integrate our 1D convolution kernel with the MAX Graph system. The key is to properly call our kernel from the `execute` method in the `Conv1DCustomOp` struct.
 
-### Reused kernels
-
-Our implementation directly incorporates these proven kernels:
-
-1. **`matmul_idiomatic_tiled`** from [Puzzle 14](../puzzle_14/puzzle_14.md) - Powers both \\(Q \\times K^T\\) and \\(\\text{weights} \\times V\\) operations
-2. **`softmax_kernel`** from [Puzzle 16](../puzzle_16/puzzle_16.md) - Provides numerically stable attention weight computation
-
-This exemplifies **modular GPU architecture**: complex neural network operations built by orchestrating proven, optimized components rather than monolithic implementations.
-
-The attention operation follows the canonical mathematical definition:
-
-$$\\Large \\text{Attention}(Q, K, V) = \\text{softmax}(Q \\cdot K^T) \\cdot V$$
-
-**Breaking down the math**:
-- \\(Q \cdot K^T\\): Query-key similarity scores of shape: \\((1, \text{seq\_len})\\)
-- \\(\text{softmax}(\cdot)\\): Normalize scores to probabilities of shape: \\((1, \text{seq\_len})\\)
-- \\(\text{weights} \cdot V\\): Weighted combination of values of shape: \\((1, d)\\)
-
-This involves several computational steps that we optimize using GPU kernels from previous puzzles.
-
-### 1. Transpose kernel implementation:
+The solution is:
 
 ```mojo
-{{#include ../../../solutions/p17/op/attention.mojo:transpose_kernel_solution}}
+{{#include ../../../solutions/p17/op/conv1d.mojo:conv1d_custom_op_solution}}
 ```
-
 <div class="solution-explanation">
+This single line does several important things:
 
-The transpose kernel uses **shared memory tiling** to achieve coalesced memory access patterns. Key implementation details:
+1. Calls [enqueue_function](https://docs.modular.com/mojo/stdlib/gpu/host/device_context/DeviceContext/#enqueue_function) on the GPU context (`gpu_ctx` is of type [DeviceContext](https://docs.modular.com/mojo/stdlib/gpu/host/device_context/DeviceContext/)) to schedule our kernel execution
+2. Passes the necessary layout and size information as **compile-time** parameters
+3. Provides the output, input, and kernel tensors as runtime arguments
+4. Configures the execution grid with the appropriate dimensions
 
-#### Critical transpose pattern
-```mojo
-# Load with normal indexing
-shared_tile[local_row, local_col] = inp[global_row, global_col]
-barrier()
-# Store with swapped indexing for transpose
-output[out_row, out_col] = shared_tile[local_col, local_row]
-```
+Let's break down how this works in the larger context:
 
-The transpose happens through **swapped indexing** in shared memory access (`[local_col, local_row]` instead of `[local_row, local_col]`) and **swapped block coordinates** for output positioning. This ensures both reads and writes remain coalesced while achieving the transpose operation.
-</div>
+### Python-Mojo integration flow
 
-### 2. GPU kernel orchestration:
+1. **Python side (<a href="{{#include ../_includes/repo_url.md}}/blob/main/problems/p17/p17.py" class="filename">problems/p17/p17.py</a>)**:
+   - Creates NumPy arrays for input and kernel
+   - Calls `conv_1d()` function which wraps our operation in MAX Graph
+   - Converts NumPy arrays to [MAX driver](https://docs.modular.com/max/api/python/driver) Tensors with `Tensor.from_numpy(input).to(device)`
+   - Loads the custom operation package with `custom_extensions=[mojo_kernels]`
 
-```mojo
-{{#include ../../../solutions/p17/op/attention.mojo:attention_orchestration_solution}}
-```
+2. **Graph building**:
+   - Defines input and output tensor types with [TensorType](https://docs.modular.com/max/api/python/graph/type/#max.graph.type.TensorType)
+   - Specifies parameters for our operation via `parameters={...}`
+   - Creates a computation graph with [`Graph("conv_1d_graph", ...)`](https://docs.modular.com/max/api/python/graph/Graph)
+   - Calls our operation using [`ops.custom(name="conv1d", ...)`](https://docs.modular.com/max/api/python/graph/ops#custom)
 
-<div class="solution-explanation">
+3. **Custom op registration**:
+   - The `@compiler.register("conv1d")` decorator exposes our operation to MAX Graph. See [@compiler.register](https://docs.modular.com/mojo/manual/decorators/compiler-register/)
+   - The `execute` method parameters define the interface (inputs, outputs, context)
+   - Input/output tensors are converted to LayoutTensors for use in our kernel
+   - Device context manages GPU memory allocation and kernel execution
 
-The GPU orchestration demonstrates **sophisticated kernel chaining** and **zero-copy memory optimization**:
+4. **Kernel execution**:
+   - When [model.execute(...)]() is called, our `conv1d_kernel` receives the data
+   - GPU thread configuration is set with `grid_dim` and `block_dim`
+   - Results are transferred back to CPU with `result.to(CPU())`
+   - NumPy verification compares our results with the expected output
 
-#### Advanced memory optimization strategies
-```mojo
-# Zero-copy reshaping - no data movement, just reinterpret tensor shape
-q_2d = q_tensor.reshape[layout_q_2d]()
-# Aggressive buffer reuse - same memory, different interpretations
-weights = scores_2d.reshape[layout_scores]()
-```
+### Key Components in Detail
 
-The implementation achieves **maximum memory efficiency** through:
-- **Zero-copy reshaping**: Reinterpreting tensor shapes without moving data in memory
-- **Intelligent buffer reuse**: The same `scores_weights_buf` serves dual purposes as both scores \\((1,\\text{seq\\_len})\\) and weights \\((\\text{seq\\_len},)\\)
-- **Minimal allocations**: Only 2 temporary buffers power the entire attention operation
-- **Memory coalescing**: All operations maintain optimal memory access patterns
+1. **Custom Op Structure**:
+   ```mojo
+   @compiler.register("conv1d")
+   struct Conv1DCustomOp:
+       @staticmethod
+       fn execute[target: StaticString, input_size: Int, conv_size: Int, dtype: DType = DType.float32](
+           output: OutputTensor[rank=1],
+           input: InputTensor[dtype = output.dtype, rank = output.rank],
+           kernel: InputTensor[dtype = output.dtype, rank = output.rank],
+           ctx: DeviceContextPtr,
+       ) raises:
+           # Implementation
+   ```
+   - `target` indicates the device type ("gpu" or "cpu")
+   - `input_size` and `conv_size` are parameters passed from Python
+   - Tensor types ensure correct shape and type checking
+   - Return type is `raises` for proper error handling
 
-#### Strategic kernel reuse pattern
-- **Steps 3 & 7**: Both leverage `matmul_idiomatic_tiled` from [Puzzle 14](../puzzle_14/puzzle_14.md)
-  - Step 3: \\(Q \\times K^T\\) → attention scores computation \\((1,d) \\times (d,\\text{seq_len}) \\rightarrow (1,\\text{seq_len})\\)
-  - Step 7: \\(\\text{weights} \\times V\\) → final weighted output \\((1,\\text{seq_len}) \\times (\\text{seq_len},d) \\rightarrow (1,d)\\)
-  - Both operations include bounds checking for robustness with variable matrix dimensions
-- **Step 5**: Employs `softmax_kernel` from [Puzzle 16](../puzzle_16/puzzle_16.md)
-  - Converts raw scores into normalized probability distribution
-  - Ensures numerical stability through max subtraction and parallel reduction
-  - Guarantees \\(\\sum_{i} \\text{weights}[i] = 1.0\\)
+2. **Tensor Conversion**:
+   ```mojo
+   output_tensor = output.to_layout_tensor()
+   input_tensor = input.to_layout_tensor()
+   kernel_tensor = kernel.to_layout_tensor()
+   ```
+   - MAX Graph tensors are converted to Mojo LayoutTensors
+   - This allows our kernel to work with them directly
+   - The layouts are extracted for compile-time optimization
 
-This exemplifies **modular GPU architecture**: complex neural network operations built by orchestrating proven, optimized kernels rather than monolithic implementations!
-</div>
+3. **Device Context Usage**:
+   ```mojo
+   gpu_ctx = ctx.get_device_context()
+   gpu_ctx.enqueue_memset(...)  # Zero output buffer
+   gpu_ctx.enqueue_function[...](...) # Schedule kernel
+   ```
+   - Device context manages GPU resources
+   - Memory operations ensure correct buffer state
+   - Function enqueueing schedules our kernel for execution
 
-### Key implementation insights
-
-<div class="solution-explanation">
-
-#### Memory optimization strategy
-The implementation achieves **minimal memory allocation** through aggressive buffer reuse:
-
-```mojo
-# Only 2 temporary buffers needed for the entire operation
-k_t_buf = gpu_ctx.enqueue_create_buffer[dtype](seq_len * d)
-scores_weights_buf = gpu_ctx.enqueue_create_buffer[dtype](seq_len)
-```
-
-**Key optimization insights**:
-- The same `scores_weights_buf` is reused for both attention scores and weights through reshape operations
-- Zero-copy tensor reshaping eliminates unnecessary data movement
-
-#### Kernel reuse architecture
-This puzzle showcases **modular kernel design** by combining three specialized kernels:
-- **`matmul_idiomatic_tiled`** (used twice) - Powers both \\(Q \\times K^T\\) and \\(\\text{weights} \\times V\\) operations
-- **`softmax_kernel`** - Provides numerically stable attention weight computation with parallel reduction
-- **`transpose_kernel`** - Enables efficient \\(K^T\\) computation with coalesced memory access
-
-**Architectural benefits**:
-- **Composability**: Complex operations built from proven components
-- **Maintainability**: Each kernel has a single, well-defined responsibility
-- **Performance**: Leverages highly optimized implementations from previous puzzles
-- **Scalability**: Modular design enables easy extension to larger attention mechanisms
-
-The implementation demonstrates that **sophisticated neural network operations** can be built by orchestrating simpler, well-tested GPU kernels rather than writing monolithic implementations.
-</div>
+This solution demonstrates the complete flow from Python data through MAX Graph to GPU execution and back, leveraging Mojo's powerful type system and parametric functions to create efficient, type-safe, accelerated operations.
 
 </details>
+
+## Understanding MAX Graph custom ops
+
+> Check out the follow tutorials for more details:
+>
+> * [Get started with MAX Graph in Python](https://docs.modular.com/max/tutorials/get-started-with-max-graph-in-python/)
+> * [MAX Graph custom op for GPUs](https://docs.modular.com/max/tutorials/build-custom-ops/)
+
+### Custom op registration
+
+The core of creating a custom operation is the `@compiler.register` decorator and the associated structure:
+
+```mojo
+@compiler.register("conv1d")
+struct Conv1DCustomOp:
+    @staticmethod
+    fn execute[...](
+        output: OutputTensor[rank=1],
+        input: InputTensor[dtype = output.dtype, rank = output.rank],
+        kernel: InputTensor[type = output.dtype, rank = output.rank],
+        ctx: DeviceContextPtr,
+    ) raises:
+        # Implementation here
+```
+
+Key components of the registration:
+- The **name** passed to the decorator (`"conv1d"`) is what Python code will use to call this operation
+- The **struct** must have an `execute` method with the correct signature
+- **OutputTensor** and **InputTensor** types define the interface for Python data
+- **DeviceContextPtr** provides access to the execution environment
+
+### Packaging custom ops
+
+Before the custom operation can be used from Python, it needs to be packaged:
+
+```bash
+mojo package op -o op.mojopkg
+```
+
+This command:
+1. Compiles the Mojo code into a deployable package
+2. Creates the necessary metadata for MAX Graph to understand the operation
+3. Produces a binary artifact (`op.mojopkg`) that can be loaded by Python
+
+The package must be placed in a location where MAX Graph can find it, typically in a directory accessible to the Python code.
+
+### Python integration
+
+On the Python side, here's how the custom operation is used:
+
+```python
+# Path to the directory containing our Mojo operations
+mojo_kernels = Path(__file__).parent / "op"
+
+# Configure our graph with the custom conv1d operation
+with Graph(
+    "conv_1d_graph",
+    input_types=[...],
+    custom_extensions=[mojo_kernels],  # Load our custom op package
+) as graph:
+    # Define inputs to the graph
+    input_value, kernel_value = graph.inputs
+
+    # Use our custom operation by name
+    output = ops.custom(
+        name="conv1d",  # Must match the name in @compiler.register
+        values=[input_value, kernel_value],
+        out_types=[...],
+        parameters={
+            "input_size": input_tensor.shape[0],
+            "conv_size": kernel_tensor.shape[0],
+            "dtype": dtype,
+        },
+    )[0].tensor
+```
+
+The key elements are:
+1. Specifying the path to our custom operations with `custom_extensions`
+2. Calling `ops.custom` with the registered operation name
+3. Passing input values and parameters that match our operation's signature

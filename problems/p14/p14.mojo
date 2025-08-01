@@ -1,151 +1,157 @@
-from sys import sizeof, argv
-from testing import assert_equal
-from gpu.host import DeviceContext
-
-# ANCHOR: naive_matmul
 from gpu import thread_idx, block_idx, block_dim, barrier
+from gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 from layout.tensor_builder import LayoutTensorBuild as tb
+from sys import sizeof, argv
+from math import log2
+from testing import assert_equal
 
-
-alias TPB = 3
-alias SIZE = 2
+# ANCHOR: prefix_sum_simple
+alias TPB = 8
+alias SIZE = 8
 alias BLOCKS_PER_GRID = (1, 1)
-alias THREADS_PER_BLOCK = (TPB, TPB)
+alias THREADS_PER_BLOCK = (TPB, 1)
 alias dtype = DType.float32
-alias layout = Layout.row_major(SIZE, SIZE)
+alias layout = Layout.row_major(SIZE)
 
 
-fn naive_matmul[
-    layout: Layout, size: Int
+fn prefix_sum_simple[
+    layout: Layout
 ](
     output: LayoutTensor[mut=False, dtype, layout],
     a: LayoutTensor[mut=False, dtype, layout],
-    b: LayoutTensor[mut=False, dtype, layout],
+    size: Int,
 ):
-    row = block_dim.y * block_idx.y + thread_idx.y
-    col = block_dim.x * block_idx.x + thread_idx.x
-    # FILL ME IN (roughly 6 lines)
+    global_i = block_dim.x * block_idx.x + thread_idx.x
+    local_i = thread_idx.x
+    # FILL ME IN (roughly 18 lines)
 
 
-# ANCHOR_END: naive_matmul
+# ANCHOR_END: prefix_sum_simple
+
+# ANCHOR: prefix_sum_complete
+alias SIZE_2 = 15
+alias BLOCKS_PER_GRID_2 = (2, 1)
+alias THREADS_PER_BLOCK_2 = (TPB, 1)
+alias EXTENDED_SIZE = SIZE_2 + 2  # up to 2 blocks
+alias extended_layout = Layout.row_major(EXTENDED_SIZE)
 
 
-# ANCHOR: single_block_matmul
-fn single_block_matmul[
-    layout: Layout, size: Int
+# Kernel 1: Compute local prefix sums and store block sums in out
+fn prefix_sum_local_phase[
+    out_layout: Layout, in_layout: Layout
 ](
-    output: LayoutTensor[mut=False, dtype, layout],
-    a: LayoutTensor[mut=False, dtype, layout],
-    b: LayoutTensor[mut=False, dtype, layout],
+    output: LayoutTensor[mut=False, dtype, out_layout],
+    a: LayoutTensor[mut=False, dtype, in_layout],
+    size: Int,
 ):
-    row = block_dim.y * block_idx.y + thread_idx.y
-    col = block_dim.x * block_idx.x + thread_idx.x
-    local_row = thread_idx.y
-    local_col = thread_idx.x
-    # FILL ME IN (roughly 12 lines)
-
-
-# ANCHOR_END: single_block_matmul
-
-# ANCHOR: matmul_tiled
-alias SIZE_TILED = 9
-alias BLOCKS_PER_GRID_TILED = (3, 3)  # each block convers 3x3 elements
-alias THREADS_PER_BLOCK_TILED = (TPB, TPB)
-alias layout_tiled = Layout.row_major(SIZE_TILED, SIZE_TILED)
-
-
-fn matmul_tiled[
-    layout: Layout, size: Int
-](
-    output: LayoutTensor[mut=False, dtype, layout],
-    a: LayoutTensor[mut=False, dtype, layout],
-    b: LayoutTensor[mut=False, dtype, layout],
-):
-    local_row = thread_idx.y
-    local_col = thread_idx.x
-    tiled_row = block_idx.y * TPB + thread_idx.y
-    tiled_col = block_idx.x * TPB + thread_idx.x
+    global_i = block_dim.x * block_idx.x + thread_idx.x
+    local_i = thread_idx.x
     # FILL ME IN (roughly 20 lines)
 
 
-# ANCHOR_END: matmul_tiled
+# Kernel 2: Add block sums to their respective blocks
+fn prefix_sum_block_sum_phase[
+    layout: Layout
+](output: LayoutTensor[mut=False, dtype, layout], size: Int):
+    global_i = block_dim.x * block_idx.x + thread_idx.x
+    # FILL ME IN (roughly 3 lines)
+
+
+# ANCHOR_END: prefix_sum_complete
 
 
 def main():
     with DeviceContext() as ctx:
-        size = SIZE_TILED if argv()[1] == "--tiled" else SIZE
-        out = ctx.enqueue_create_buffer[dtype](size * size).enqueue_fill(0)
-        inp1 = ctx.enqueue_create_buffer[dtype](size * size).enqueue_fill(0)
-        inp2 = ctx.enqueue_create_buffer[dtype](size * size).enqueue_fill(0)
-        expected = ctx.enqueue_create_host_buffer[dtype](
-            size * size
-        ).enqueue_fill(0)
-        with inp1.map_to_host() as inp1_host, inp2.map_to_host() as inp2_host:
-            for row in range(size):
-                for col in range(size):
-                    val = row * size + col
-                    # row major: placing elements row by row
-                    inp1_host[row * size + col] = val
-                    inp2_host[row * size + col] = Float32(2.0) * val
+        if len(argv()) != 2 or argv()[1] not in [
+            "--simple",
+            "--block-boundary",
+        ]:
+            raise Error(
+                "Expected one command-line argument: '--simple' or"
+                " '--block-boundary'"
+            )
 
-            # inp1 @ inp2.T
+        use_simple = argv()[1] == "--simple"
+
+        size = SIZE if use_simple else SIZE_2
+        num_blocks = (size + TPB - 1) // TPB
+
+        if not use_simple and num_blocks > EXTENDED_SIZE - SIZE_2:
+            raise Error("Extended buffer too small for the number of blocks")
+
+        buffer_size = size if use_simple else EXTENDED_SIZE
+        out = ctx.enqueue_create_buffer[dtype](buffer_size).enqueue_fill(0)
+        a = ctx.enqueue_create_buffer[dtype](size).enqueue_fill(0)
+
+        with a.map_to_host() as a_host:
             for i in range(size):
-                for j in range(size):
-                    for k in range(size):
-                        expected[i * size + j] += (
-                            inp1_host[i * size + k] * inp2_host[k * size + j]
-                        )
+                a_host[i] = i
 
-        out_tensor = LayoutTensor[mut=False, dtype, layout](out.unsafe_ptr())
-        a_tensor = LayoutTensor[mut=False, dtype, layout](inp1.unsafe_ptr())
-        b_tensor = LayoutTensor[mut=False, dtype, layout](inp2.unsafe_ptr())
+        a_tensor = LayoutTensor[mut=False, dtype, layout](a.unsafe_ptr())
 
-        if argv()[1] == "--naive":
-            ctx.enqueue_function[naive_matmul[layout, SIZE]](
-                out_tensor,
-                a_tensor,
-                b_tensor,
-                grid_dim=BLOCKS_PER_GRID,
-                block_dim=THREADS_PER_BLOCK,
-            )
-        elif argv()[1] == "--single-block":
-            ctx.enqueue_function[single_block_matmul[layout, SIZE]](
-                out_tensor,
-                a_tensor,
-                b_tensor,
-                grid_dim=BLOCKS_PER_GRID,
-                block_dim=THREADS_PER_BLOCK,
-            )
-        elif argv()[1] == "--tiled":
-            # Need to update the layout of the tensors to the tiled layout
-            out_tensor_tiled = LayoutTensor[mut=False, dtype, layout_tiled](
+        if use_simple:
+            out_tensor = LayoutTensor[mut=False, dtype, layout](
                 out.unsafe_ptr()
             )
-            a_tensor_tiled = LayoutTensor[mut=False, dtype, layout_tiled](
-                inp1.unsafe_ptr()
-            )
-            b_tensor_tiled = LayoutTensor[mut=False, dtype, layout_tiled](
-                inp2.unsafe_ptr()
-            )
 
-            ctx.enqueue_function[matmul_tiled[layout_tiled, SIZE_TILED]](
-                out_tensor_tiled,
-                a_tensor_tiled,
-                b_tensor_tiled,
-                grid_dim=BLOCKS_PER_GRID_TILED,
-                block_dim=THREADS_PER_BLOCK_TILED,
+            ctx.enqueue_function[prefix_sum_simple[layout]](
+                out_tensor,
+                a_tensor,
+                size,
+                grid_dim=BLOCKS_PER_GRID,
+                block_dim=THREADS_PER_BLOCK,
             )
         else:
-            raise Error("Invalid argument")
+            var out_tensor = LayoutTensor[mut=False, dtype, extended_layout](
+                out.unsafe_ptr()
+            )
 
+            # ANCHOR: prefix_sum_complete_block_level_sync
+            # Phase 1: Local prefix sums
+            ctx.enqueue_function[
+                prefix_sum_local_phase[extended_layout, extended_layout]
+            ](
+                out_tensor,
+                a_tensor,
+                size,
+                grid_dim=BLOCKS_PER_GRID_2,
+                block_dim=THREADS_PER_BLOCK_2,
+            )
+
+            # Wait for all `blocks` to complete with using host `ctx.synchronize()`
+            # Note this is in contrast with using `barrier()` in the kernel
+            # which is a synchronization point for all threads in the same block and not across blocks.
+            ctx.synchronize()
+
+            # Phase 2: Add block sums
+            ctx.enqueue_function[prefix_sum_block_sum_phase[extended_layout]](
+                out_tensor,
+                size,
+                grid_dim=BLOCKS_PER_GRID_2,
+                block_dim=THREADS_PER_BLOCK_2,
+            )
+            # ANCHOR_END: prefix_sum_complete_block_level_sync
+
+        # Verify results for both cases
+        expected = ctx.enqueue_create_host_buffer[dtype](size).enqueue_fill(0)
         ctx.synchronize()
 
+        with a.map_to_host() as a_host:
+            expected[0] = a_host[0]
+            for i in range(1, size):
+                expected[i] = expected[i - 1] + a_host[i]
+
         with out.map_to_host() as out_host:
+            if not use_simple:
+                print(
+                    "Note: we print the extended buffer here, but we only need"
+                    " to print the first `size` elements"
+                )
+
             print("out:", out_host)
             print("expected:", expected)
-            for col in range(size):
-                for row in range(size):
-                    assert_equal(
-                        out_host[col * size + row], expected[col * size + row]
-                    )
+            # Here we need to use the size of the original array, not the extended one
+            size = size if use_simple else SIZE_2
+            for i in range(size):
+                assert_equal(out_host[i], expected[i])

@@ -1,440 +1,436 @@
-from gpu import thread_idx, block_idx, block_dim, lane_id
+from gpu import thread_idx, block_dim, block_idx, barrier
 from gpu.host import DeviceContext
-from gpu.warp import shuffle_down, broadcast, WARP_SIZE
+from gpu.host.compile import get_gpu_target
 from layout import Layout, LayoutTensor
-from sys import argv
-from testing import assert_equal, assert_almost_equal
+from layout.tensor_builder import LayoutTensorBuild as tb
+from utils import IndexList
+from math import log2
+from algorithm.functional import elementwise, vectorize
+from sys import simdwidthof, argv
+from testing import assert_equal
+from benchmark import Bench, BenchConfig, Bencher, BenchId, keep
 
-# ANCHOR: neighbor_difference
-alias SIZE = WARP_SIZE
-alias BLOCKS_PER_GRID = (1, 1)
-alias THREADS_PER_BLOCK = (WARP_SIZE, 1)
-alias dtype = DType.float32
+# ANCHOR: elementwise_add
+alias SIZE = 1024
+alias rank = 1
 alias layout = Layout.row_major(SIZE)
+alias dtype = DType.float32
+alias SIMD_WIDTH = simdwidthof[dtype, target = get_gpu_target()]()
 
 
-fn neighbor_difference[
-    layout: Layout, size: Int
+fn elementwise_add[
+    layout: Layout, dtype: DType, simd_width: Int, rank: Int, size: Int
 ](
-    output: LayoutTensor[mut=False, dtype, layout],
-    input: LayoutTensor[mut=False, dtype, layout],
-):
-    """
-    Compute finite differences: output[i] = input[i+1] - input[i]
-    Uses shuffle_down(val, 1) to get the next neighbor's value.
-    Works across multiple blocks, each processing one warp worth of data.
-    """
-    global_i = block_dim.x * block_idx.x + thread_idx.x
-    lane = lane_id()
+    output: LayoutTensor[mut=True, dtype, layout, MutableAnyOrigin],
+    a: LayoutTensor[mut=False, dtype, layout, MutableAnyOrigin],
+    b: LayoutTensor[mut=False, dtype, layout, MutableAnyOrigin],
+    ctx: DeviceContext,
+) raises:
+    @parameter
+    @always_inline
+    fn add[
+        simd_width: Int, rank: Int
+    ](indices: IndexList[rank]) capturing -> None:
+        idx = indices[0]
+        print("idx:", idx)
+        # FILL IN (2 to 4 lines)
 
-    # FILL IN (roughly 7 lines)
-
-
-# ANCHOR_END: neighbor_difference
-
-# ANCHOR: moving_average_3
-alias SIZE_2 = 64
-alias BLOCKS_PER_GRID_2 = (2, 1)
-alias THREADS_PER_BLOCK_2 = (WARP_SIZE, 1)
-alias layout_2 = Layout.row_major(SIZE_2)
+    elementwise[add, SIMD_WIDTH, target="gpu"](a.size(), ctx)
 
 
-fn moving_average_3[
-    layout: Layout, size: Int
+# ANCHOR_END: elementwise_add
+
+
+# ANCHOR: tiled_elementwise_add
+alias TILE_SIZE = 32
+
+
+fn tiled_elementwise_add[
+    layout: Layout,
+    dtype: DType,
+    simd_width: Int,
+    rank: Int,
+    size: Int,
+    tile_size: Int,
 ](
-    output: LayoutTensor[mut=False, dtype, layout],
-    input: LayoutTensor[mut=False, dtype, layout],
-):
-    """
-    Compute 3-point moving average: output[i] = (input[i] + input[i+1] + input[i+2]) / 3
-    Uses shuffle_down with offsets 1 and 2 to access neighbors.
-    Works within warp boundaries across multiple blocks.
-    """
-    global_i = block_dim.x * block_idx.x + thread_idx.x
-    lane = lane_id()
+    output: LayoutTensor[mut=True, dtype, layout, MutableAnyOrigin],
+    a: LayoutTensor[mut=False, dtype, layout, MutableAnyOrigin],
+    b: LayoutTensor[mut=False, dtype, layout, MutableAnyOrigin],
+    ctx: DeviceContext,
+) raises:
+    @parameter
+    @always_inline
+    fn process_tiles[
+        simd_width: Int, rank: Int
+    ](indices: IndexList[rank]) capturing -> None:
+        tile_id = indices[0]
+        print("tile_id:", tile_id)
+        out_tile = output.tile[tile_size](tile_id)
+        a_tile = a.tile[tile_size](tile_id)
+        b_tile = b.tile[tile_size](tile_id)
 
-    # FILL IN (roughly 10 lines)
+        # FILL IN (6 lines at most)
+
+    num_tiles = (size + tile_size - 1) // tile_size
+    elementwise[process_tiles, 1, target="gpu"](num_tiles, ctx)
 
 
-# ANCHOR_END: moving_average_3
+# ANCHOR_END: tiled_elementwise_add
 
 
-# ANCHOR: broadcast_shuffle_coordination
-fn broadcast_shuffle_coordination[
-    layout: Layout, size: Int
+# ANCHOR: manual_vectorized_tiled_elementwise_add
+fn manual_vectorized_tiled_elementwise_add[
+    layout: Layout,
+    dtype: DType,
+    simd_width: Int,
+    num_threads_per_tile: Int,
+    rank: Int,
+    size: Int,
+    tile_size: Int,
 ](
-    output: LayoutTensor[mut=False, dtype, layout],
-    input: LayoutTensor[mut=False, dtype, layout],
-):
-    """
-    Combine broadcast() and shuffle_down() for advanced warp coordination.
-    Lane 0 computes block-local scaling factor, broadcasts it to all lanes in the warp.
-    Each lane uses shuffle_down() for neighbor access and applies broadcast factor.
-    """
-    global_i = block_dim.x * block_idx.x + thread_idx.x
-    lane = lane_id()
-    if global_i < size:
-        var scale_factor: output.element_type = 0.0
+    output: LayoutTensor[mut=True, dtype, layout, MutableAnyOrigin],
+    a: LayoutTensor[mut=False, dtype, layout, MutableAnyOrigin],
+    b: LayoutTensor[mut=False, dtype, layout, MutableAnyOrigin],
+    ctx: DeviceContext,
+) raises:
+    # Each tile contains tile_size groups of simd_width elements
+    alias chunk_size = tile_size * simd_width
 
-        # FILL IN (roughly 14 lines)
+    @parameter
+    @always_inline
+    fn process_manual_vectorized_tiles[
+        num_threads_per_tile: Int, rank: Int
+    ](indices: IndexList[rank]) capturing -> None:
+        tile_id = indices[0]
+        print("tile_id:", tile_id)
+        out_tile = output.tile[chunk_size](tile_id)
+        a_tile = a.tile[chunk_size](tile_id)
+        b_tile = b.tile[chunk_size](tile_id)
+
+        # FILL IN (7 lines at most)
+
+    # Number of tiles needed: each tile processes chunk_size elements
+    num_tiles = (size + chunk_size - 1) // chunk_size
+    elementwise[
+        process_manual_vectorized_tiles, num_threads_per_tile, target="gpu"
+    ](num_tiles, ctx)
 
 
-# ANCHOR_END: broadcast_shuffle_coordination
+# ANCHOR_END: manual_vectorized_tiled_elementwise_add
 
 
-# ANCHOR: basic_broadcast
-fn basic_broadcast[
-    layout: Layout, size: Int
+# ANCHOR: vectorize_within_tiles_elementwise_add
+fn vectorize_within_tiles_elementwise_add[
+    layout: Layout,
+    dtype: DType,
+    simd_width: Int,
+    num_threads_per_tile: Int,
+    rank: Int,
+    size: Int,
+    tile_size: Int,
 ](
-    output: LayoutTensor[mut=False, dtype, layout],
-    input: LayoutTensor[mut=False, dtype, layout],
-):
-    """
-    Basic broadcast: Lane 0 computes a block-local value, broadcasts it to all lanes.
-    Each lane then uses this broadcast value in its own computation.
-    """
-    global_i = block_dim.x * block_idx.x + thread_idx.x
-    lane = lane_id()
-    if global_i < size:
-        var broadcast_value: output.element_type = 0.0
-
-        # FILL IN (roughly 10 lines)
-
-
-# ANCHOR_END: basic_broadcast
-
-
-# ANCHOR: conditional_broadcast
-fn conditional_broadcast[
-    layout: Layout, size: Int
-](
-    output: LayoutTensor[mut=False, dtype, layout],
-    input: LayoutTensor[mut=False, dtype, layout],
-):
-    """
-    Conditional broadcast: Lane 0 makes a decision based on block-local data, broadcasts it to all lanes.
-    All lanes apply different logic based on the broadcast decision.
-    """
-    global_i = block_dim.x * block_idx.x + thread_idx.x
-    lane = lane_id()
-    if global_i < size:
-        var decision_value: output.element_type = 0.0
-
-        # FILL IN (roughly 10 lines)
-
-        current_input = input[global_i]
-        threshold = decision_value / 2.0
-        if current_input >= threshold:
-            output[global_i] = current_input * 2.0  # Double if >= threshold
-        else:
-            output[global_i] = current_input / 2.0  # Halve if < threshold
-
-
-# ANCHOR_END: conditional_broadcast
-
-
-def test_neighbor_difference():
-    with DeviceContext() as ctx:
-        # Create test data: [0, 1, 4, 9, 16, 25, ...] (squares)
-        input_buf = ctx.enqueue_create_buffer[dtype](SIZE).enqueue_fill(0)
-        output_buf = ctx.enqueue_create_buffer[dtype](SIZE).enqueue_fill(0)
-
-        with input_buf.map_to_host() as input_host:
-            for i in range(SIZE):
-                input_host[i] = i * i
-
-        input_tensor = LayoutTensor[mut=False, dtype, layout](
-            input_buf.unsafe_ptr()
-        )
-        output_tensor = LayoutTensor[mut=False, dtype, layout](
-            output_buf.unsafe_ptr()
-        )
-
-        ctx.enqueue_function[neighbor_difference[layout, SIZE]](
-            output_tensor,
-            input_tensor,
-            grid_dim=BLOCKS_PER_GRID,
-            block_dim=THREADS_PER_BLOCK,
+    output: LayoutTensor[mut=True, dtype, layout, MutableAnyOrigin],
+    a: LayoutTensor[mut=False, dtype, layout, MutableAnyOrigin],
+    b: LayoutTensor[mut=False, dtype, layout, MutableAnyOrigin],
+    ctx: DeviceContext,
+) raises:
+    # Each tile contains tile_size elements (not SIMD groups)
+    @parameter
+    @always_inline
+    fn process_tile_with_vectorize[
+        num_threads_per_tile: Int, rank: Int
+    ](indices: IndexList[rank]) capturing -> None:
+        tile_id = indices[0]
+        tile_start = tile_id * tile_size
+        tile_end = min(tile_start + tile_size, size)
+        actual_tile_size = tile_end - tile_start
+        print(
+            "tile_id:",
+            tile_id,
+            "tile_start:",
+            tile_start,
+            "tile_end:",
+            tile_end,
+            "actual_tile_size:",
+            actual_tile_size,
         )
 
-        expected_buf = ctx.enqueue_create_host_buffer[dtype](SIZE).enqueue_fill(
-            0
+        # FILL IN (9 lines at most)
+
+    num_tiles = (size + tile_size - 1) // tile_size
+    elementwise[
+        process_tile_with_vectorize, num_threads_per_tile, target="gpu"
+    ](num_tiles, ctx)
+
+
+# ANCHOR_END: vectorize_within_tiles_elementwise_add
+
+
+@parameter
+@always_inline
+fn benchmark_elementwise_parameterized[
+    test_size: Int, tile_size: Int
+](mut b: Bencher) raises:
+    @parameter
+    @always_inline
+    fn elementwise_workflow(ctx: DeviceContext) raises:
+        alias layout = Layout.row_major(test_size)
+        out = ctx.enqueue_create_buffer[dtype](test_size).enqueue_fill(0)
+        a = ctx.enqueue_create_buffer[dtype](test_size).enqueue_fill(0)
+        b_buf = ctx.enqueue_create_buffer[dtype](test_size).enqueue_fill(0)
+
+        with a.map_to_host() as a_host, b_buf.map_to_host() as b_host:
+            for i in range(test_size):
+                a_host[i] = 2 * i
+                b_host[i] = 2 * i + 1
+
+        a_tensor = LayoutTensor[mut=False, dtype, layout](a.unsafe_ptr())
+        b_tensor = LayoutTensor[mut=False, dtype, layout](b_buf.unsafe_ptr())
+        out_tensor = LayoutTensor[mut=True, dtype, layout](out.unsafe_ptr())
+
+        elementwise_add[layout, dtype, SIMD_WIDTH, rank, test_size](
+            out_tensor, a_tensor, b_tensor, ctx
         )
+        keep(out.unsafe_ptr())
         ctx.synchronize()
 
-        # Create expected results: differences of squares should be odd numbers
-        for i in range(SIZE - 1):
-            expected_buf[i] = (i + 1) * (i + 1) - i * i
-        expected_buf[
-            SIZE - 1
-        ] = 0  # Last element should be 0 (no valid neighbor)
-
-        with output_buf.map_to_host() as output_host:
-            print("output:", output_host)
-            print("expected:", expected_buf)
-            for i in range(SIZE):
-                assert_equal(output_host[i], expected_buf[i])
-
-    print("✅ Basic neighbor difference test passed!")
+    bench_ctx = DeviceContext()
+    b.iter_custom[elementwise_workflow](bench_ctx)
 
 
-def test_moving_average():
-    with DeviceContext() as ctx:
-        # Create test data: [1, 2, 4, 7, 11, 16, 22, 29, ...]
-        input_buf = ctx.enqueue_create_buffer[dtype](SIZE_2).enqueue_fill(0)
-        output_buf = ctx.enqueue_create_buffer[dtype](SIZE_2).enqueue_fill(0)
+@parameter
+@always_inline
+fn benchmark_tiled_parameterized[
+    test_size: Int, tile_size: Int
+](mut b: Bencher) raises:
+    @parameter
+    @always_inline
+    fn tiled_workflow(ctx: DeviceContext) raises:
+        alias layout = Layout.row_major(test_size)
+        out = ctx.enqueue_create_buffer[dtype](test_size).enqueue_fill(0)
+        a = ctx.enqueue_create_buffer[dtype](test_size).enqueue_fill(0)
+        b_buf = ctx.enqueue_create_buffer[dtype](test_size).enqueue_fill(0)
 
-        with input_buf.map_to_host() as input_host:
-            input_host[0] = 1
-            for i in range(1, SIZE_2):
-                input_host[i] = input_host[i - 1] + i + 1
+        with a.map_to_host() as a_host, b_buf.map_to_host() as b_host:
+            for i in range(test_size):
+                a_host[i] = 2 * i
+                b_host[i] = 2 * i + 1
 
-        input_tensor = LayoutTensor[mut=False, dtype, layout_2](
-            input_buf.unsafe_ptr()
-        )
-        output_tensor = LayoutTensor[mut=False, dtype, layout_2](
-            output_buf.unsafe_ptr()
-        )
+        a_tensor = LayoutTensor[mut=False, dtype, layout](a.unsafe_ptr())
+        b_tensor = LayoutTensor[mut=False, dtype, layout](b_buf.unsafe_ptr())
+        out_tensor = LayoutTensor[mut=True, dtype, layout](out.unsafe_ptr())
 
-        ctx.enqueue_function[moving_average_3[layout_2, SIZE_2]](
-            output_tensor,
-            input_tensor,
-            grid_dim=BLOCKS_PER_GRID_2,
-            block_dim=THREADS_PER_BLOCK_2,
-        )
-
-        expected_buf = ctx.enqueue_create_host_buffer[dtype](
-            SIZE_2
-        ).enqueue_fill(0)
+        tiled_elementwise_add[
+            layout, dtype, SIMD_WIDTH, rank, test_size, tile_size
+        ](out_tensor, a_tensor, b_tensor, ctx)
+        keep(out.unsafe_ptr())
         ctx.synchronize()
 
-        # Create expected results
-        with input_buf.map_to_host() as input_host:
-            for block in range(BLOCKS_PER_GRID_2[0]):
-                warp_start = block * WARP_SIZE
-                warp_end = min(warp_start + WARP_SIZE, SIZE_2)
-
-                for i in range(warp_start, warp_end):
-                    lane = i % WARP_SIZE
-                    if lane < WARP_SIZE - 2 and i < SIZE_2 - 2:
-                        # 3-point average within warp
-                        expected_buf[i] = (
-                            input_host[i]
-                            + input_host[i + 1]
-                            + input_host[i + 2]
-                        ) / 3.0
-                    elif lane < WARP_SIZE - 1 and i < SIZE_2 - 1:
-                        # 2-point average
-                        expected_buf[i] = (
-                            input_host[i] + input_host[i + 1]
-                        ) / 2.0
-                    else:
-                        # Single value
-                        expected_buf[i] = input_host[i]
-
-        with output_buf.map_to_host() as output_host:
-            print("output:", output_host)
-            print("expected:", expected_buf)
-
-            # Verify results
-            for i in range(SIZE_2):
-                assert_almost_equal(output_host[i], expected_buf[i], rtol=1e-5)
-
-    print("✅ Moving average test passed!")
+    bench_ctx = DeviceContext()
+    b.iter_custom[tiled_workflow](bench_ctx)
 
 
-def test_broadcast_shuffle_coordination():
-    with DeviceContext() as ctx:
-        # Create test data: [2, 4, 6, 8, 1, 3, 5, 7, ...]
-        input_buf = ctx.enqueue_create_buffer[dtype](SIZE).enqueue_fill(0)
-        output_buf = ctx.enqueue_create_buffer[dtype](SIZE).enqueue_fill(0)
+@parameter
+@always_inline
+fn benchmark_manual_vectorized_parameterized[
+    test_size: Int, tile_size: Int
+](mut b: Bencher) raises:
+    @parameter
+    @always_inline
+    fn manual_vectorized_workflow(ctx: DeviceContext) raises:
+        alias layout = Layout.row_major(test_size)
+        out = ctx.enqueue_create_buffer[dtype](test_size).enqueue_fill(0)
+        a = ctx.enqueue_create_buffer[dtype](test_size).enqueue_fill(0)
+        b_buf = ctx.enqueue_create_buffer[dtype](test_size).enqueue_fill(0)
 
-        with input_buf.map_to_host() as input_host:
-            # Create pattern: [2, 4, 6, 8, 1, 3, 5, 7, ...]
-            for i in range(SIZE):
-                if i < 4:
-                    input_host[i] = (i + 1) * 2
-                else:
-                    input_host[i] = ((i - 4) % 4) * 2 + 1
+        with a.map_to_host() as a_host, b_buf.map_to_host() as b_host:
+            for i in range(test_size):
+                a_host[i] = 2 * i
+                b_host[i] = 2 * i + 1
 
-        input_tensor = LayoutTensor[mut=False, dtype, layout](
-            input_buf.unsafe_ptr()
-        )
-        output_tensor = LayoutTensor[mut=False, dtype, layout](
-            output_buf.unsafe_ptr()
-        )
+        a_tensor = LayoutTensor[mut=False, dtype, layout](a.unsafe_ptr())
+        b_tensor = LayoutTensor[mut=False, dtype, layout](b_buf.unsafe_ptr())
+        out_tensor = LayoutTensor[mut=True, dtype, layout](out.unsafe_ptr())
 
-        ctx.enqueue_function[broadcast_shuffle_coordination[layout, SIZE]](
-            output_tensor,
-            input_tensor,
-            grid_dim=BLOCKS_PER_GRID,
-            block_dim=THREADS_PER_BLOCK,
-        )
-
-        expected_buf = ctx.enqueue_create_host_buffer[dtype](SIZE).enqueue_fill(
-            0
-        )
+        manual_vectorized_tiled_elementwise_add[
+            layout, dtype, SIMD_WIDTH, 1, rank, test_size, tile_size
+        ](out_tensor, a_tensor, b_tensor, ctx)
+        keep(out.unsafe_ptr())
         ctx.synchronize()
 
-        # Create expected results
-        with input_buf.map_to_host() as input_host:
-            # Lane 0 computes scale_factor from first 4 elements in block: (2+4+6+8)/4 = 5.0
-            expected_scale = Float32(5.0)
-
-            for i in range(SIZE):
-                if i < SIZE - 1:
-                    expected_buf[i] = (
-                        input_host[i] + input_host[i + 1]
-                    ) * expected_scale
-                else:
-                    expected_buf[i] = input_host[i] * expected_scale
-
-        with output_buf.map_to_host() as output_host:
-            print("output:", output_host)
-            print("expected:", expected_buf)
-            # Verify results
-            for i in range(SIZE):
-                assert_almost_equal(output_host[i], expected_buf[i], rtol=1e-4)
-
-    print("✅ Broadcast + Shuffle coordination test passed!")
+    bench_ctx = DeviceContext()
+    b.iter_custom[manual_vectorized_workflow](bench_ctx)
 
 
-def test_basic_broadcast():
-    with DeviceContext() as ctx:
-        # Create test data: [1, 2, 3, 4, 5, 6, 7, 8, ...]
-        input_buf = ctx.enqueue_create_buffer[dtype](SIZE).enqueue_fill(0)
-        output_buf = ctx.enqueue_create_buffer[dtype](SIZE).enqueue_fill(0)
+@parameter
+@always_inline
+fn benchmark_vectorized_parameterized[
+    test_size: Int, tile_size: Int
+](mut b: Bencher) raises:
+    @parameter
+    @always_inline
+    fn vectorized_workflow(ctx: DeviceContext) raises:
+        alias layout = Layout.row_major(test_size)
+        out = ctx.enqueue_create_buffer[dtype](test_size).enqueue_fill(0)
+        a = ctx.enqueue_create_buffer[dtype](test_size).enqueue_fill(0)
+        b_buf = ctx.enqueue_create_buffer[dtype](test_size).enqueue_fill(0)
 
-        with input_buf.map_to_host() as input_host:
-            for i in range(SIZE):
-                input_host[i] = i + 1
+        with a.map_to_host() as a_host, b_buf.map_to_host() as b_host:
+            for i in range(test_size):
+                a_host[i] = 2 * i
+                b_host[i] = 2 * i + 1
 
-        input_tensor = LayoutTensor[mut=False, dtype, layout](
-            input_buf.unsafe_ptr()
-        )
-        output_tensor = LayoutTensor[mut=False, dtype, layout](
-            output_buf.unsafe_ptr()
-        )
+        a_tensor = LayoutTensor[mut=False, dtype, layout](a.unsafe_ptr())
+        b_tensor = LayoutTensor[mut=False, dtype, layout](b_buf.unsafe_ptr())
+        out_tensor = LayoutTensor[mut=True, dtype, layout](out.unsafe_ptr())
 
-        ctx.enqueue_function[basic_broadcast[layout, SIZE]](
-            output_tensor,
-            input_tensor,
-            grid_dim=BLOCKS_PER_GRID,
-            block_dim=THREADS_PER_BLOCK,
-        )
-
-        expected_buf = ctx.enqueue_create_host_buffer[dtype](SIZE).enqueue_fill(
-            0
-        )
+        vectorize_within_tiles_elementwise_add[
+            layout, dtype, SIMD_WIDTH, 1, rank, test_size, tile_size
+        ](out_tensor, a_tensor, b_tensor, ctx)
+        keep(out.unsafe_ptr())
         ctx.synchronize()
 
-        # Create expected results
-        with input_buf.map_to_host() as input_host:
-            # Lane 0 computes broadcast_value from first 4 elements: 1+2+3+4 = 10
-            expected_broadcast = Float32(10.0)
-            for i in range(SIZE):
-                expected_buf[i] = expected_broadcast + input_host[i]
-
-        with output_buf.map_to_host() as output_host:
-            print("output:", output_host)
-            print("expected:", expected_buf)
-
-            # Verify results
-            for i in range(SIZE):
-                assert_almost_equal(output_host[i], expected_buf[i], rtol=1e-4)
-
-    print("✅ Basic broadcast test passed!")
-
-
-def test_conditional_broadcast():
-    with DeviceContext() as ctx:
-        # Create test data: [3, 1, 7, 2, 9, 4, 6, 8, ...]
-        input_buf = ctx.enqueue_create_buffer[dtype](SIZE).enqueue_fill(0)
-        output_buf = ctx.enqueue_create_buffer[dtype](SIZE).enqueue_fill(0)
-
-        with input_buf.map_to_host() as input_host:
-            # Create pattern with known max
-            test_values = [
-                Float32(3.0),
-                Float32(1.0),
-                Float32(7.0),
-                Float32(2.0),
-                Float32(9.0),
-                Float32(4.0),
-                Float32(6.0),
-                Float32(8.0),
-            ]
-            for i in range(SIZE):
-                input_host[i] = test_values[i % len(test_values)]
-
-        input_tensor = LayoutTensor[mut=False, dtype, layout](
-            input_buf.unsafe_ptr()
-        )
-        output_tensor = LayoutTensor[mut=False, dtype, layout](
-            output_buf.unsafe_ptr()
-        )
-
-        ctx.enqueue_function[conditional_broadcast[layout, SIZE]](
-            output_tensor,
-            input_tensor,
-            grid_dim=BLOCKS_PER_GRID,
-            block_dim=THREADS_PER_BLOCK,
-        )
-
-        expected_buf = ctx.enqueue_create_host_buffer[dtype](SIZE).enqueue_fill(
-            0
-        )
-        ctx.synchronize()
-
-        # Create expected results
-        with input_buf.map_to_host() as input_host:
-            # Lane 0 finds max of first 8 elements in block: max(3,1,7,2,9,4,6,8) = 9.0, threshold = 4.5
-            expected_max = Float32(9.0)
-            threshold = expected_max / 2.0
-            for i in range(SIZE):
-                if input_host[i] >= threshold:
-                    expected_buf[i] = input_host[i] * 2.0
-                else:
-                    expected_buf[i] = input_host[i] / 2.0
-
-        with output_buf.map_to_host() as output_host:
-            print("output:", output_host)
-            print("expected:", expected_buf)
-
-            # Verify results
-            for i in range(SIZE):
-                assert_almost_equal(output_host[i], expected_buf[i], rtol=1e-4)
-
-    print("✅ Conditional broadcast test passed!")
+    bench_ctx = DeviceContext()
+    b.iter_custom[vectorized_workflow](bench_ctx)
 
 
 def main():
-    print("WARP_SIZE: ", WARP_SIZE)
-    if len(argv()) < 1 or len(argv()) > 2:
-        print(
-            "Usage: p23.mojo"
-            " [--neighbor|--average|--broadcast-basic|--broadcast-conditional|--broadcast-shuffle-coordination]"
-        )
-        return
+    ctx = DeviceContext()
+    out = ctx.enqueue_create_buffer[dtype](SIZE).enqueue_fill(0)
+    a = ctx.enqueue_create_buffer[dtype](SIZE).enqueue_fill(0)
+    b = ctx.enqueue_create_buffer[dtype](SIZE).enqueue_fill(0)
+    expected = ctx.enqueue_create_host_buffer[dtype](SIZE).enqueue_fill(0)
 
-    test_type = argv()[1]
-    if test_type == "--neighbor":
-        print("SIZE: ", SIZE)
-        test_neighbor_difference()
-    elif test_type == "--average":
-        print("SIZE_2: ", SIZE_2)
-        test_moving_average()
-    elif test_type == "--broadcast-basic":
-        print("SIZE: ", SIZE)
-        test_basic_broadcast()
-    elif test_type == "--broadcast-conditional":
-        print("SIZE: ", SIZE)
-        test_conditional_broadcast()
-    elif test_type == "--broadcast-shuffle-coordination":
-        print("SIZE: ", SIZE)
-        test_broadcast_shuffle_coordination()
-    else:
-        print(
-            "Usage: p23.mojo"
-            " [--neighbor|--average|--broadcast-basic|--broadcast-conditional|--broadcast-shuffle-coordination]"
+    with a.map_to_host() as a_host, b.map_to_host() as b_host:
+        for i in range(SIZE):
+            a_host[i] = 2 * i
+            b_host[i] = 2 * i + 1
+            expected[i] = a_host[i] + b_host[i]
+
+    a_tensor = LayoutTensor[mut=False, dtype, layout](a.unsafe_ptr())
+    b_tensor = LayoutTensor[mut=False, dtype, layout](b.unsafe_ptr())
+
+    ctx.synchronize()
+
+    print("SIZE:", SIZE)
+    print("simd_width:", SIMD_WIDTH)
+
+    if len(argv()) != 2 or argv()[1] not in [
+        "--elementwise",
+        "--tiled",
+        "--manual-vectorized",
+        "--vectorized",
+        "--benchmark",
+    ]:
+        raise Error(
+            "Usage: --elementwise | --tiled | --manual-vectorized |"
+            " --vectorized | --benchmark"
         )
+
+    if argv()[1] == "--elementwise":
+        out_tensor = LayoutTensor[mut=True, dtype, layout](out.unsafe_ptr())
+        elementwise_add[layout, dtype, SIMD_WIDTH, rank, SIZE](
+            out_tensor, a_tensor, b_tensor, ctx
+        )
+
+        with out.map_to_host() as out_host:
+            print("out:", out_host)
+            print("expected:", expected)
+            for i in range(SIZE):
+                assert_equal(out_host[i], expected[i])
+
+    elif argv()[1] == "--tiled":
+        out_tensor = LayoutTensor[mut=True, dtype, layout](out.unsafe_ptr())
+        print("tile size:", TILE_SIZE)
+        tiled_elementwise_add[layout, dtype, SIMD_WIDTH, rank, SIZE, TILE_SIZE](
+            out_tensor, a_tensor, b_tensor, ctx
+        )
+
+        with out.map_to_host() as out_host:
+            print("out:", out_host)
+            print("expected:", expected)
+            for i in range(SIZE):
+                assert_equal(out_host[i], expected[i])
+
+    elif argv()[1] == "--manual-vectorized":
+        out_tensor = LayoutTensor[mut=True, dtype, layout](out.unsafe_ptr())
+        print("tile size:", TILE_SIZE)
+        manual_vectorized_tiled_elementwise_add[
+            layout, dtype, SIMD_WIDTH, 1, rank, SIZE, TILE_SIZE
+        ](out_tensor, a_tensor, b_tensor, ctx)
+
+        with out.map_to_host() as out_host:
+            print("out:", out_host)
+            print("expected:", expected)
+            for i in range(SIZE):
+                assert_equal(out_host[i], expected[i])
+
+    elif argv()[1] == "--vectorized":
+        out_tensor = LayoutTensor[mut=True, dtype, layout](out.unsafe_ptr())
+        print("tile size:", TILE_SIZE)
+        vectorize_within_tiles_elementwise_add[
+            layout, dtype, SIMD_WIDTH, 1, rank, SIZE, TILE_SIZE
+        ](out_tensor, a_tensor, b_tensor, ctx)
+
+        with out.map_to_host() as out_host:
+            print("out:", out_host)
+            print("expected:", expected)
+            for i in range(SIZE):
+                assert_equal(out_host[i], expected[i])
+
+    elif argv()[1] == "--benchmark":
+        print("Running P21 GPU Benchmarks...")
+        print("SIMD width:", SIMD_WIDTH)
+        print("-" * 80)
+        bench_config = BenchConfig(max_iters=10, min_warmuptime_secs=0.2)
+        bench = Bench(bench_config)
+
+        print("Testing SIZE=16, TILE=4")
+        bench.bench_function[benchmark_elementwise_parameterized[16, 4]](
+            BenchId("elementwise_16_4")
+        )
+        bench.bench_function[benchmark_tiled_parameterized[16, 4]](
+            BenchId("tiled_16_4")
+        )
+        bench.bench_function[benchmark_manual_vectorized_parameterized[16, 4]](
+            BenchId("manual_vectorized_16_4")
+        )
+        bench.bench_function[benchmark_vectorized_parameterized[16, 4]](
+            BenchId("vectorized_16_4")
+        )
+
+        print("-" * 80)
+        print("Testing SIZE=128, TILE=16")
+        bench.bench_function[benchmark_elementwise_parameterized[128, 16]](
+            BenchId("elementwise_128_16")
+        )
+        bench.bench_function[benchmark_tiled_parameterized[128, 16]](
+            BenchId("tiled_128_16")
+        )
+        bench.bench_function[
+            benchmark_manual_vectorized_parameterized[128, 16]
+        ](BenchId("manual_vectorized_128_16"))
+
+        print("-" * 80)
+        print("Testing SIZE=128, TILE=16, Vectorize within tiles")
+        bench.bench_function[benchmark_vectorized_parameterized[128, 16]](
+            BenchId("vectorized_128_16")
+        )
+
+        print("-" * 80)
+        print("Testing SIZE=1048576 (1M), TILE=1024")
+        bench.bench_function[
+            benchmark_elementwise_parameterized[1048576, 1024]
+        ](BenchId("elementwise_1M_1024"))
+        bench.bench_function[benchmark_tiled_parameterized[1048576, 1024]](
+            BenchId("tiled_1M_1024")
+        )
+        bench.bench_function[
+            benchmark_manual_vectorized_parameterized[1048576, 1024]
+        ](BenchId("manual_vectorized_1M_1024"))
+        bench.bench_function[benchmark_vectorized_parameterized[1048576, 1024]](
+            BenchId("vectorized_1M_1024")
+        )
+
+        print(bench)
+        print("Benchmarks completed!")

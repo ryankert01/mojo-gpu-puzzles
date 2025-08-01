@@ -44,7 +44,7 @@
 
 Welcome to **Mojo🔥 GPU Puzzles** — an interactive approach to learning GPU programming through hands-on puzzle solving. Instead of traditional textbook learning, you'll immediately dive into writing real GPU code and seeing the results.
 
-Start Learning Now 👉 [https://builds.modular.com/puzzles](https://builds.modular.com/puzzles)
+Start Learning Now 👉 [puzzles.modular.com](https://puzzles.modular.com/)
 
 > 📬 [Subscribe to updates](https://www.modular.com/company/talk-to-us) to get notified when new puzzles are released!
 
@@ -74,7 +74,26 @@ You'll need a [compatible GPU](https://docs.modular.com/max/faq#gpu-requirements
    ```
 3. Install a package manager to run the Mojo🔥 programs:
 
-    ### Option 1: [`uv`](https://docs.astral.sh/uv/getting-started/installation/) (recommended for users)
+    ### **(Recommended) Option 1**: [pixi](https://pixi.sh/latest/#installation)
+
+    `pixi` is the **recommended option** for this project because:
+    - ✅ Easy access to Modular's MAX/Mojo packages
+    - ✅ Handles CUDA toolkit and GPU dependencies
+    - ✅ Full conda + PyPI ecosystem support
+
+    **Note: A few puzzles only work with `pixi`.**
+
+    **Install:**
+    ```bash
+    curl -fsSL https://pixi.sh/install.sh | sh
+    ```
+
+    **Update:**
+    ```bash
+    pixi self-update
+    ```
+
+    ### Option 2: [`uv`](https://docs.astral.sh/uv/getting-started/installation/)
 
     **Install:**
     ```bash
@@ -89,18 +108,6 @@ You'll need a [compatible GPU](https://docs.modular.com/max/faq#gpu-requirements
     **Create a virtual environment:**
     ```bash
     uv venv && source .venv/bin/activate
-    ```
-
-    ### Option 2: [pixi](https://pixi.sh/latest/#installation) (recommended for contributors)
-
-    **Install:**
-    ```bash
-    curl -fsSL https://pixi.sh/install.sh | sh
-    ```
-
-    **Update:**
-    ```bash
-    pixi self-update
     ```
 
 4. Start solving puzzles!
@@ -121,10 +128,12 @@ pixi run tests pXX
 pixi run mojo/python solutions/pXX/pXX.{mojo,py}
 
 # Run GPU sanitizers for debugging on NVIDIA GPUs using `compute-sanitizer`
-pixi run memcheck     # Detect memory errors
-pixi run racecheck    # Detect race conditions
-pixi run synccheck    # Detect synchronization errors
-pixi run initcheck    # Detect uninitialized memory access
+pixi run memcheck  <optional pXX>    # Detect memory errors
+pixi run racecheck <optional pXX>    # Detect race conditions
+pixi run synccheck <optional pXX>    # Detect synchronization errors
+pixi run initcheck <optional pXX>    # Detect uninitialized memory access
+# Or run all sanitizer tools
+pixi run sanitizers pXX
 # Or manually
 # Note: ignore the mojo runtime error collision with the sanitizer. Look for `Error SUMMARY`
 pixi run compute-sanitizer --tool {memcheck,racecheck,synccheck,initcheck} mojo solutions/pXX/pXX.mojo
